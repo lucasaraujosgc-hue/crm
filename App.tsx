@@ -123,6 +123,9 @@ export default function App() {
     aiActive: false
   });
   const [initialMessage, setInitialMessage] = useLocalStorage<string>('crm_initial_msg', 'Olá, tudo bem?');
+  
+  // WhatsApp State
+  const [waSession, setWaSession] = useState<WhatsAppSession>({ status: 'disconnected' });
 
   // API Integration State
   const [isProcessing, setIsProcessing] = useState(false);
@@ -143,6 +146,25 @@ export default function App() {
   useEffect(() => {
     fetchCompanies();
   }, []);
+
+  // Poll WhatsApp Status
+  useEffect(() => {
+    if (activeTab === 'whatsapp') {
+      const interval = setInterval(async () => {
+        try {
+          const res = await fetch('/api/whatsapp/status');
+          const data = await res.json();
+          setWaSession({
+            status: data.status,
+            qrCode: data.qr
+          });
+        } catch (e) {
+          console.error("Erro ao buscar status do WhatsApp", e);
+        }
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [activeTab]);
 
   const fetchCompanies = async () => {
     try {
@@ -178,11 +200,9 @@ export default function App() {
           fetch(`/get-results/${currentProcessId}`)
             .then(r => r.json())
             .then(resData => {
-               if(resData.results) {
                  fetchCompanies(); // Refresh full list
                  alert("Importação concluída com sucesso!");
                  setActiveTab('empresas');
-               }
             });
         }
       } catch (e) { console.error(e); }
@@ -851,6 +871,65 @@ export default function App() {
     );
   };
 
+  const WhatsAppView = () => {
+    const isConnected = waSession.status === 'connected';
+    const isReadyForQr = waSession.status === 'qr_ready' && waSession.qrCode;
+
+    return (
+      <div className="h-full flex flex-col animate-fade-in">
+        <div className="mb-6">
+          <h2 className="text-2xl font-bold text-slate-800">Conexão WhatsApp</h2>
+          <p className="text-slate-500">Escaneie o QR Code para conectar seu bot de vendas.</p>
+        </div>
+
+        <div className="flex-1 flex items-center justify-center">
+          <div className="card-premium p-10 max-w-lg w-full text-center">
+            
+            {/* Status Indicator */}
+            <div className={`mx-auto mb-6 w-16 h-16 rounded-full flex items-center justify-center transition-all duration-500 ${isConnected ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+              <MessageCircle size={32} className={isConnected ? '' : 'animate-pulse'} />
+            </div>
+
+            <h3 className="text-2xl font-bold text-slate-800 mb-2">
+              {isConnected ? 'WhatsApp Conectado' : 'Conectar WhatsApp'}
+            </h3>
+            
+            <p className="text-slate-500 mb-8">
+              {isConnected 
+                ? 'Seu bot está online e pronto para enviar campanhas.' 
+                : 'Abra o WhatsApp no celular > Dispositivos > Conectar'
+              }
+            </p>
+
+            {/* QR Code Display */}
+            {!isConnected && isReadyForQr ? (
+              <div className="bg-white p-4 rounded-xl shadow-lg inline-block border border-slate-200">
+                <img src={waSession.qrCode} alt="QR Code" className="w-64 h-64 object-contain" />
+              </div>
+            ) : !isConnected ? (
+              <div className="w-64 h-64 mx-auto bg-slate-100 rounded-xl flex items-center justify-center">
+                <div className="text-center">
+                  <div className="w-8 h-8 border-4 border-brand-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                  <span className="text-sm text-slate-400">Gerando QR Code...</span>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-emerald-50 text-emerald-700 p-4 rounded-xl border border-emerald-100 flex items-center gap-3 justify-center">
+                 <CheckCircle2 size={24} />
+                 <span className="font-semibold">Sessão Ativa</span>
+              </div>
+            )}
+            
+            <div className="mt-8 text-xs text-slate-400">
+              Status atual: <span className="font-mono font-bold">{waSession.status}</span>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // --- Render ---
 
   return (
@@ -975,13 +1054,7 @@ export default function App() {
             {activeTab === 'empresas' && <EmpresasView />}
             {activeTab === 'campanhas' && <CampaignView />}
             {activeTab === 'knowledge' && <KnowledgeBaseView />}
-            {activeTab === 'whatsapp' && (
-              <div className="flex flex-col items-center justify-center h-full text-slate-400 animate-fade-in">
-                <MessageCircle size={64} className="mb-4 opacity-20" />
-                <h2 className="text-xl font-bold text-slate-600">Módulo WhatsApp</h2>
-                <p>O QR Code do Baileys aparecerá aqui quando o backend estiver conectado.</p>
-              </div>
-            )}
+            {activeTab === 'whatsapp' && <WhatsAppView />}
              {activeTab === 'config' && (
               <div className="flex flex-col items-center justify-center h-full text-slate-400 animate-fade-in">
                 <Settings size={64} className="mb-4 opacity-20" />
