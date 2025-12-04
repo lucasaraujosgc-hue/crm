@@ -56,6 +56,7 @@ import { MOCK_DATA, DEFAULT_KNOWLEDGE_RULES, DEFAULT_AI_PERSONA } from './consta
 function useLocalStorage<T>(key: string, initialValue: T): [T, (value: T | ((val: T) => T)) => void] {
   const [storedValue, setStoredValue] = useState<T>(() => {
     try {
+      if (typeof window === 'undefined') return initialValue;
       const item = window.localStorage.getItem(key);
       return item ? JSON.parse(item) : initialValue;
     } catch (error) {
@@ -68,7 +69,9 @@ function useLocalStorage<T>(key: string, initialValue: T): [T, (value: T | ((val
     try {
       const valueToStore = value instanceof Function ? value(storedValue) : value;
       setStoredValue(valueToStore);
-      window.localStorage.setItem(key, JSON.stringify(valueToStore));
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(key, JSON.stringify(valueToStore));
+      }
     } catch (error) {
       console.error(error);
     }
@@ -79,7 +82,7 @@ function useLocalStorage<T>(key: string, initialValue: T): [T, (value: T | ((val
 
 // --- Components ---
 
-const SidebarItem = ({ icon: Icon, label, active, onClick, collapsed }: any) => (
+const SidebarItem = ({ icon: Icon, label, active, onClick, collapsed }: { icon: any, label: string, active: boolean, onClick: () => void, collapsed: boolean }) => (
   <button
     onClick={onClick}
     className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium transition-all duration-200 rounded-xl mb-1
@@ -96,7 +99,7 @@ const SidebarItem = ({ icon: Icon, label, active, onClick, collapsed }: any) => 
   </button>
 );
 
-const StatCard = ({ title, value, icon: Icon, trend, color }: any) => (
+const StatCard = ({ title, value, icon: Icon, trend, color }: { title: string, value: string | number, icon: any, trend?: string, color: string }) => (
   <div className="relative overflow-hidden bg-white border border-slate-100 p-6 rounded-2xl shadow-[0_2px_20px_-4px_rgba(0,0,0,0.05)] group hover:-translate-y-1 transition-all duration-300">
     <div className={`absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity ${color}`}>
       <Icon size={64} />
@@ -124,7 +127,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   
-  // Persistent State
+  // Persistent State via LocalStorage
   const [companies, setCompanies] = useLocalStorage<CompanyResult[]>('crm_companies', MOCK_DATA);
   const [knowledgeRules, setKnowledgeRules] = useLocalStorage<KnowledgeRule[]>('crm_rules', DEFAULT_KNOWLEDGE_RULES);
   const [aiConfig, setAiConfig] = useLocalStorage<AIConfig>('crm_ai_config', {
@@ -140,7 +143,6 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(knowledgeRules[0]?.id || null);
-  const [simulatorInput, setSimulatorInput] = useState('');
   const [whatsappSession, setWhatsappSession] = useState<WhatsAppSession>({ status: 'disconnected' });
   
   // Campaign State
@@ -173,19 +175,19 @@ export default function App() {
     setIsProcessing(true);
     setUploadProgress(0);
 
-    // Simulate processing
+    // Simulate processing loop
     const interval = setInterval(() => {
       setUploadProgress(prev => {
         if (prev >= 100) {
           clearInterval(interval);
           setIsProcessing(false);
-          // In a real app, we would parse the PDF here. 
-          // For now, let's just add a duplicate mock entry to simulate data
+          // Mocking a new entry extraction
           const newEntry: CompanyResult = {
             ...MOCK_DATA[0],
             id: Math.random().toString(36).substr(2, 9),
             razaoSocial: `NOVA EMPRESA IMPORTADA ${Math.floor(Math.random() * 100)}`,
-            status: Status.SUCCESS
+            status: Status.SUCCESS,
+            motivoSituacao: 'Art. 27 - Inc. XVIII - MEI' // Ensure it matches a known rule for demo
           };
           setCompanies(prev => [newEntry, ...prev]);
           setActiveTab('empresas');
@@ -202,7 +204,7 @@ export default function App() {
 
   const handleSaveRule = (updatedRule: KnowledgeRule) => {
     setKnowledgeRules(prev => prev.map(r => r.id === updatedRule.id ? updatedRule : r));
-    // Also update main config
+    // Also update main config if needed
     setAiConfig(prev => ({
       ...prev,
       knowledgeRules: prev.knowledgeRules.map(r => r.id === updatedRule.id ? updatedRule : r)
@@ -222,7 +224,6 @@ export default function App() {
   const handleCampaignBlast = () => {
     if (selectedCompanies.length === 0) return;
     
-    // Simulate sending
     const updatedCompanies = companies.map(c => {
       if (selectedCompanies.includes(c.id)) {
         return {
@@ -236,7 +237,7 @@ export default function App() {
     
     setCompanies(updatedCompanies);
     setSelectedCompanies([]);
-    alert(`Enviando mensagens para ${selectedCompanies.length} empresas!`);
+    alert(`Mensagens enfileiradas para ${selectedCompanies.length} contatos!\nA IA assumirá a conversa quando responderem.`);
   };
 
   // --- Views ---
@@ -312,7 +313,7 @@ export default function App() {
                {aiConfig.aiActive ? 'IA Ativa e Respondendo' : 'IA Pausada'}
              </h4>
              <p className="text-sm text-slate-500 mb-6">
-               {aiConfig.aiActive ? 'O bot está processando mensagens recebidas.' : 'O bot não responderá a ninguém.'}
+               {aiConfig.aiActive ? 'O bot está respondendo os clientes.' : 'O bot não enviará mensagens automáticas.'}
              </p>
              <button 
                onClick={toggleAiActive}
