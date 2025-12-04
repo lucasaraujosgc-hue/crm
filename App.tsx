@@ -32,7 +32,8 @@ import {
   Terminal,
   ChevronRight,
   LogOut,
-  Plus
+  Plus,
+  Power
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -48,8 +49,39 @@ import {
   AreaChart,
   Area
 } from 'recharts';
-import { CompanyResult, Status, WhatsAppSession, AIConfig, CampaignStatus, KnowledgeRule } from './types';
+import { CompanyResult, Status, CampaignStatus, WhatsAppSession, AIConfig, KnowledgeRule } from './types';
 import { MOCK_DATA, DEFAULT_AI_PERSONA, DEFAULT_KNOWLEDGE_RULES } from './constants';
+
+// --- Custom Hooks ---
+
+function useLocalStorage<T>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
+  const [storedValue, setStoredValue] = useState<T>(() => {
+    try {
+      if (typeof window === 'undefined') {
+        return initialValue;
+      }
+      const item = window.localStorage.getItem(key);
+      return item ? JSON.parse(item) : initialValue;
+    } catch (error) {
+      console.log(error);
+      return initialValue;
+    }
+  });
+
+  const setValue = (value: T | ((val: T) => T)) => {
+    try {
+      const valueToStore = value instanceof Function ? value(storedValue) : value;
+      setStoredValue(valueToStore);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(key, JSON.stringify(valueToStore));
+      }
+    } catch (error) {
+      console.log(error);
+    }
+  };
+
+  return [storedValue, setValue];
+}
 
 // --- UI Components Helpers ---
 
@@ -282,7 +314,7 @@ const UploadView = ({ onUpload }: { onUpload: () => void }) => {
           {!isProcessing && (
             <button 
               onClick={handleSimulatedUpload}
-              className="inline-flex items-center justify-center gap-2 px-10 py-4 text-lg bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-xl shadow-blue-500/30 transform hover:-translate-y-1 transition-all duration-200 active:scale-95 cursor-pointer"
+              className="inline-flex items-center justify-center gap-2 px-10 py-4 text-lg bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-xl shadow-blue-500/30 transform hover:-translate-y-1 transition-all duration-200 active:scale-95 cursor-pointer btn-primary"
             >
               <Upload size={24} />
               Selecionar Arquivo
@@ -347,7 +379,7 @@ const ResultsView = ({ data }: { data: CompanyResult[] }) => {
           <Search className="absolute left-4 top-3.5 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={20} />
         </div>
         <div className="flex space-x-3">
-          <button className="inline-flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl hover:bg-slate-50 hover:text-blue-600 hover:border-blue-200 transition-all">
+          <button className="btn-secondary">
             <Filter size={18} />
             <span>Filtros</span>
           </button>
@@ -458,18 +490,36 @@ const ResultsView = ({ data }: { data: CompanyResult[] }) => {
 const CampaignView = ({ data, config }: { data: CompanyResult[], config: AIConfig }) => {
   const [activeTab, setActiveTab] = useState<'pending' | 'sent' | 'replied'>('pending');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [motivoFilter, setMotivoFilter] = useState<string>('all');
+  const [initialMessage, setInitialMessage] = useLocalStorage('initialMessage', 
+    'Olá, falo com o responsável pela {Empresa}? Aqui é Lucas.\nNotei que sua empresa está com pendência na SEFAZ ({Motivo}).\nPodemos regularizar isso hoje?'
+  );
+
+  const availableMotivos = useMemo(() => {
+    const motivos = new Set(data.map(c => c.motivoSituacao).filter(m => m));
+    return Array.from(motivos).sort();
+  }, [data]);
 
   const filteredData = useMemo(() => {
+    let base = [];
     switch(activeTab) {
       case 'pending': 
-        return data.filter(d => d.campaignStatus === CampaignStatus.PENDING && d.telefone);
+        base = data.filter(d => d.campaignStatus === CampaignStatus.PENDING && d.telefone);
+        break;
       case 'sent':
-        return data.filter(d => d.campaignStatus === CampaignStatus.SENT || d.campaignStatus === CampaignStatus.QUEUED);
+        base = data.filter(d => d.campaignStatus === CampaignStatus.SENT || d.campaignStatus === CampaignStatus.QUEUED);
+        break;
       case 'replied':
-        return data.filter(d => d.campaignStatus === CampaignStatus.REPLIED);
-      default: return [];
+        base = data.filter(d => d.campaignStatus === CampaignStatus.REPLIED);
+        break;
+      default: base = [];
     }
-  }, [data, activeTab]);
+    
+    if (motivoFilter !== 'all') {
+      return base.filter(d => d.motivoSituacao === motivoFilter);
+    }
+    return base;
+  }, [data, activeTab, motivoFilter]);
 
   const toggleSelection = (id: string) => {
     const newSet = new Set(selectedIds);
@@ -484,36 +534,76 @@ const CampaignView = ({ data, config }: { data: CompanyResult[], config: AIConfi
 
   return (
     <div className="flex flex-col h-[calc(100vh-140px)] animate-fade-in gap-6">
-      <div className="flex items-center justify-between">
-        <div className="flex bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm">
-          {['pending', 'sent', 'replied'].map((tab) => (
-            <button 
-              key={tab}
-              onClick={() => setActiveTab(tab as any)}
-              className={`px-8 py-3 rounded-xl font-bold text-sm transition-all duration-300 ${
-                activeTab === tab 
-                  ? 'bg-slate-900 text-white shadow-md' 
-                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'
-              }`}
-            >
-              {tab === 'pending' && 'Fila de Envio'}
-              {tab === 'sent' && 'Enviadas'}
-              {tab === 'replied' && 'Respostas'}
-              <span className={`ml-3 px-2 py-0.5 rounded-full text-xs font-extrabold ${activeTab === tab ? 'bg-white/20' : 'bg-slate-100 text-slate-600'}`}>
-                {tab === 'pending' && data.filter(d => d.campaignStatus === CampaignStatus.PENDING && d.telefone).length}
-                {tab === 'sent' && data.filter(d => d.campaignStatus === CampaignStatus.SENT).length}
-                {tab === 'replied' && data.filter(d => d.campaignStatus === CampaignStatus.REPLIED).length}
-              </span>
-            </button>
-          ))}
+      {/* Filters and Config */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="xl:col-span-2 flex flex-col gap-4">
+           <div className="flex items-center justify-between">
+              <div className="flex bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm">
+                {['pending', 'sent', 'replied'].map((tab) => (
+                  <button 
+                    key={tab}
+                    onClick={() => setActiveTab(tab as any)}
+                    className={`px-8 py-3 rounded-xl font-bold text-sm transition-all duration-300 ${
+                      activeTab === tab 
+                        ? 'bg-slate-900 text-white shadow-md' 
+                        : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+                    }`}
+                  >
+                    {tab === 'pending' && 'Fila de Envio'}
+                    {tab === 'sent' && 'Enviadas'}
+                    {tab === 'replied' && 'Respostas'}
+                    <span className={`ml-3 px-2 py-0.5 rounded-full text-xs font-extrabold ${activeTab === tab ? 'bg-white/20' : 'bg-slate-100 text-slate-600'}`}>
+                      {tab === 'pending' && data.filter(d => d.campaignStatus === CampaignStatus.PENDING && d.telefone).length}
+                      {tab === 'sent' && data.filter(d => d.campaignStatus === CampaignStatus.SENT).length}
+                      {tab === 'replied' && data.filter(d => d.campaignStatus === CampaignStatus.REPLIED).length}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {activeTab === 'pending' && selectedIds.size > 0 && (
+                <button className="btn-primary animate-slide-up">
+                  <Send size={18} />
+                  <span>Disparar ({selectedIds.size})</span>
+                </button>
+              )}
+           </div>
+
+           {/* Filters */}
+           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
+              <Filter size={20} className="text-slate-400" />
+              <div className="flex-1">
+                 <label className="text-xs font-bold text-slate-500 uppercase">Filtrar por Motivo</label>
+                 <select 
+                   className="w-full mt-1 bg-transparent font-semibold text-slate-800 outline-none"
+                   value={motivoFilter}
+                   onChange={(e) => setMotivoFilter(e.target.value)}
+                 >
+                    <option value="all">Todos os Motivos</option>
+                    {availableMotivos.map(m => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                 </select>
+              </div>
+           </div>
         </div>
 
-        {activeTab === 'pending' && selectedIds.size > 0 && (
-          <button className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-bold rounded-xl shadow-lg shadow-blue-500/30 hover:shadow-blue-500/40 transform hover:-translate-y-0.5 transition-all duration-200 active:scale-95 animate-slide-up">
-            <Send size={18} />
-            <span>Disparar Campanha ({selectedIds.size})</span>
-          </button>
-        )}
+        {/* Message Config */}
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col h-full">
+           <div className="flex justify-between items-center mb-2">
+             <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2">
+               <MessageSquare size={14} />
+               Mensagem Inicial
+             </label>
+             <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded font-bold">Variáveis: {'{Empresa}'}, {'{Motivo}'}</span>
+           </div>
+           <textarea 
+             className="flex-1 w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm text-slate-700 resize-none focus:bg-white focus:border-blue-500 transition-colors"
+             value={initialMessage}
+             onChange={(e) => setInitialMessage(e.target.value)}
+             placeholder="Digite a mensagem inicial..."
+           />
+        </div>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-2xl shadow-sm flex flex-col flex-1 overflow-hidden">
@@ -597,7 +687,12 @@ const CampaignView = ({ data, config }: { data: CompanyResult[], config: AIConfi
 
 // --- WhatsApp View ---
 
-const WhatsAppView = ({ session, setSession }: { session: WhatsAppSession, setSession: React.Dispatch<React.SetStateAction<WhatsAppSession>> }) => {
+const WhatsAppView = ({ session, setSession, aiConfig, setAiConfig }: { 
+  session: WhatsAppSession, 
+  setSession: React.Dispatch<React.SetStateAction<WhatsAppSession>>,
+  aiConfig: AIConfig,
+  setAiConfig: React.Dispatch<React.SetStateAction<AIConfig>>
+}) => {
   const [logs, setLogs] = useState<string[]>([
     "> System.init(Baileys_Protocol)",
     "> Waiting for QR Code generation..."
@@ -662,11 +757,37 @@ const WhatsAppView = ({ session, setSession }: { session: WhatsAppSession, setSe
         <h2 className="text-2xl font-black text-slate-800 mb-2 tracking-tight">
           {session.status === 'connected' ? 'Dispositivo Pareado' : 'Conectar WhatsApp'}
         </h2>
-        <p className="text-slate-500 mb-10 px-4 font-medium">
+        <p className="text-slate-500 mb-6 px-4 font-medium">
           {session.status === 'connected' 
             ? `Sessão ativa com ${session.userName}.` 
             : 'Escaneie o QR Code para sincronizar.'}
         </p>
+
+        {session.status === 'connected' && (
+           <div className="mb-8 w-full">
+              <button
+                onClick={() => setAiConfig(prev => ({...prev, aiActive: !prev.aiActive}))}
+                className={`w-full flex items-center justify-between p-4 rounded-xl border transition-all ${
+                  aiConfig.aiActive 
+                    ? 'bg-blue-50 border-blue-200 text-blue-700 shadow-sm' 
+                    : 'bg-slate-50 border-slate-200 text-slate-500'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                   <div className={`p-2 rounded-lg ${aiConfig.aiActive ? 'bg-blue-500 text-white' : 'bg-slate-200 text-slate-400'}`}>
+                      <Bot size={20} />
+                   </div>
+                   <div className="text-left">
+                      <div className="font-bold text-sm">Inteligência Artificial</div>
+                      <div className="text-xs opacity-80">{aiConfig.aiActive ? 'Respondendo automaticamente' : 'Desativada'}</div>
+                   </div>
+                </div>
+                <div className={`w-12 h-6 rounded-full p-1 transition-colors ${aiConfig.aiActive ? 'bg-blue-500' : 'bg-slate-300'}`}>
+                   <div className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${aiConfig.aiActive ? 'translate-x-6' : 'translate-x-0'}`}></div>
+                </div>
+              </button>
+           </div>
+        )}
 
         {session.status === 'qr_ready' && (
           <div className="mb-6 flex flex-col items-center w-full relative z-10">
@@ -793,7 +914,7 @@ const KnowledgeBaseView = ({
     } else {
       newRules = [...config.knowledgeRules, { ...updatedRule, id: Date.now().toString(), isActive: true }];
     }
-    setConfig({ ...config, knowledgeRules: newRules });
+    setConfig(prev => ({ ...prev, knowledgeRules: newRules }));
   };
 
   const generatePreview = () => {
@@ -984,13 +1105,16 @@ const KnowledgeBaseView = ({
 
 const App = () => {
   const [activeView, setActiveView] = useState<'dashboard' | 'upload' | 'results' | 'campaign' | 'whatsapp' | 'knowledge' | 'settings'>('dashboard');
-  const [companies, setCompanies] = useState<CompanyResult[]>(MOCK_DATA);
-  const [whatsappSession, setWhatsappSession] = useState<WhatsAppSession>({ status: 'disconnected' });
-  const [aiConfig, setAiConfig] = useState<AIConfig>({
+  
+  // Persistent Data with useLocalStorage
+  const [companies, setCompanies] = useLocalStorage<CompanyResult[]>('crm_companies', MOCK_DATA);
+  const [whatsappSession, setWhatsappSession] = useLocalStorage<WhatsAppSession>('crm_whatsapp', { status: 'disconnected' });
+  const [aiConfig, setAiConfig] = useLocalStorage<AIConfig>('crm_ai_config', {
     model: 'gpt-4',
     persona: DEFAULT_AI_PERSONA,
     knowledgeRules: DEFAULT_KNOWLEDGE_RULES,
-    temperature: 0.7
+    temperature: 0.7,
+    aiActive: false
   });
 
   const handleUpload = () => {
@@ -1035,12 +1159,22 @@ const App = () => {
         </div>
 
         <div className="p-6 border-t border-slate-800 bg-[#0f1629]">
-          <div className="flex items-center gap-3">
-            <div className={`w-2.5 h-2.5 rounded-full ${whatsappSession.status === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]' : 'bg-rose-500'}`}></div>
-            <div>
-              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Status do Bot</div>
-              <div className="text-sm font-bold text-white">{whatsappSession.status === 'connected' ? 'Online' : 'Desconectado'}</div>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className={`w-2.5 h-2.5 rounded-full ${whatsappSession.status === 'connected' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]' : 'bg-rose-500'}`}></div>
+              <div>
+                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Bot Status</div>
+                <div className="text-sm font-bold text-white">{whatsappSession.status === 'connected' ? 'Online' : 'Offline'}</div>
+              </div>
             </div>
+            {whatsappSession.status === 'connected' && (
+              <div 
+                className={`w-8 h-8 rounded-lg flex items-center justify-center ${aiConfig.aiActive ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}
+                title={aiConfig.aiActive ? "IA Ativa" : "IA Desativada"}
+              >
+                <Bot size={16} />
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1084,7 +1218,7 @@ const App = () => {
            {activeView === 'upload' && <UploadView onUpload={handleUpload} />}
            {activeView === 'results' && <ResultsView data={companies} />}
            {activeView === 'campaign' && <CampaignView data={companies} config={aiConfig} />}
-           {activeView === 'whatsapp' && <WhatsAppView session={whatsappSession} setSession={setWhatsappSession} />}
+           {activeView === 'whatsapp' && <WhatsAppView session={whatsappSession} setSession={setWhatsappSession} aiConfig={aiConfig} setAiConfig={setAiConfig} />}
            {activeView === 'knowledge' && <KnowledgeBaseView config={aiConfig} setConfig={setAiConfig} companies={companies} />}
            {activeView === 'settings' && (
              <div className="flex items-center justify-center h-full text-slate-400">

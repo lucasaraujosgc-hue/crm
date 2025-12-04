@@ -57,6 +57,7 @@ export interface AIConfig {
   persona: string;
   knowledgeRules: KnowledgeRule[];
   temperature: number;
+  aiActive: boolean; // Master switch for AI on WhatsApp
 }
 
 export interface WhatsAppSession {
