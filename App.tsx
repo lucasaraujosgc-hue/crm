@@ -7,34 +7,22 @@ import {
   Bot, 
   Settings, 
   Menu,
-  X,
   FileSpreadsheet,
   Search,
   Filter,
   CheckCircle2,
   AlertCircle,
-  Loader2,
   Send,
   RefreshCw,
-  Smartphone,
-  Save,
   Megaphone,
   BookOpen,
-  Clock,
-  Check,
-  MessageSquare,
-  MoreVertical,
-  Briefcase,
-  AlertTriangle,
-  Lightbulb,
-  ArrowRight,
-  Users,
-  Terminal,
-  ChevronRight,
-  LogOut,
   Plus,
   Power,
-  Trash2
+  Trash2,
+  Terminal,
+  Briefcase,
+  AlertTriangle,
+  MessageSquare
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -43,13 +31,10 @@ import {
   YAxis, 
   CartesianGrid, 
   Tooltip, 
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell
+  ResponsiveContainer
 } from 'recharts';
 import { CompanyResult, Status, CampaignStatus, KnowledgeRule, AIConfig, WhatsAppSession } from './types';
-import { MOCK_DATA, DEFAULT_KNOWLEDGE_RULES, DEFAULT_AI_PERSONA } from './constants';
+import { DEFAULT_KNOWLEDGE_RULES, DEFAULT_AI_PERSONA } from './constants';
 
 // --- Custom Hooks ---
 
@@ -127,8 +112,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   
-  // Persistent State via LocalStorage
-  const [companies, setCompanies] = useLocalStorage<CompanyResult[]>('crm_companies', MOCK_DATA);
+  // Data State
+  const [companies, setCompanies] = useState<CompanyResult[]>([]);
   const [knowledgeRules, setKnowledgeRules] = useLocalStorage<KnowledgeRule[]>('crm_rules', DEFAULT_KNOWLEDGE_RULES);
   const [aiConfig, setAiConfig] = useLocalStorage<AIConfig>('crm_ai_config', {
     model: 'gemini-pro',
@@ -139,63 +124,120 @@ export default function App() {
   });
   const [initialMessage, setInitialMessage] = useLocalStorage<string>('crm_initial_msg', 'Olá, tudo bem?');
 
-  // Temporary State
+  // API Integration State
   const [isProcessing, setIsProcessing] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [currentProcessId, setCurrentProcessId] = useState<string | null>(null);
+  const [processingStatus, setProcessingStatus] = useState<string>('');
+
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(knowledgeRules[0]?.id || null);
-  const [whatsappSession, setWhatsappSession] = useState<WhatsAppSession>({ status: 'disconnected' });
   
   // Campaign State
   const [campaignFilter, setCampaignFilter] = useState<CampaignStatus | 'all'>('all');
   const [campaignReasonFilter, setCampaignReasonFilter] = useState<string>('all');
   const [selectedCompanies, setSelectedCompanies] = useState<string[]>([]);
 
+  // --- Effects ---
+
+  // Load Companies from Backend on mount
+  useEffect(() => {
+    fetchCompanies();
+  }, []);
+
+  const fetchCompanies = async () => {
+    try {
+      const res = await fetch('/get-all-results');
+      if (res.ok) {
+        const data = await res.json();
+        setCompanies(data);
+      }
+    } catch (error) {
+      console.error("Falha ao buscar empresas:", error);
+    }
+  };
+
+  // SSE Listener for Progress
+  useEffect(() => {
+    if (!currentProcessId || !isProcessing) return;
+
+    const eventSource = new EventSource(`/progress/${currentProcessId}`);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.status === 'not_found') return;
+
+        const percent = data.total > 0 ? Math.round((data.processed / data.total) * 100) : 0;
+        setUploadProgress(percent);
+        setProcessingStatus(`Processando... ${data.processed} de ${data.total}`);
+
+        if (data.status === 'completed' || data.status === 'error') {
+          setIsProcessing(false);
+          eventSource.close();
+          // Fetch results specifically for this process and append/merge
+          fetch(`/get-results/${currentProcessId}`)
+            .then(r => r.json())
+            .then(resData => {
+               if(resData.results) {
+                 fetchCompanies(); // Refresh full list
+                 alert("Importação concluída com sucesso!");
+                 setActiveTab('empresas');
+               }
+            });
+        }
+      } catch (e) { console.error(e); }
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, [currentProcessId, isProcessing]);
+
   // --- Computed Data ---
   
   const stats = useMemo(() => {
     return {
       total: companies.length,
-      success: companies.filter(c => c.status === Status.SUCCESS).length,
-      pending: companies.filter(c => c.campaignStatus === CampaignStatus.PENDING).length,
-      contacted: companies.filter(c => c.campaignStatus !== CampaignStatus.PENDING).length,
+      success: companies.filter(c => c.status === 'Sucesso').length,
+      pending: companies.filter(c => !c.campaignStatus || c.campaignStatus === CampaignStatus.PENDING).length,
+      contacted: companies.filter(c => c.campaignStatus && c.campaignStatus !== CampaignStatus.PENDING).length,
     };
   }, [companies]);
 
   const uniqueReasons = useMemo(() => {
     const reasons = new Set(companies.map(c => c.motivoSituacao));
-    return Array.from(reasons);
+    return Array.from(reasons).filter(Boolean);
   }, [companies]);
 
   // --- Actions ---
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setIsProcessing(true);
-    setUploadProgress(0);
+    const formData = new FormData();
+    formData.append('file', file);
 
-    // Simulate processing loop
-    const interval = setInterval(() => {
-      setUploadProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setIsProcessing(false);
-          // Mocking a new entry extraction
-          const newEntry: CompanyResult = {
-            ...MOCK_DATA[0],
-            id: Math.random().toString(36).substr(2, 9),
-            razaoSocial: `NOVA EMPRESA IMPORTADA ${Math.floor(Math.random() * 100)}`,
-            status: Status.SUCCESS,
-            motivoSituacao: 'Art. 27 - Inc. XVIII - MEI' // Ensure it matches a known rule for demo
-          };
-          setCompanies(prev => [newEntry, ...prev]);
-          setActiveTab('empresas');
-          return 100;
-        }
-        return prev + 10;
+    try {
+      setIsProcessing(true);
+      setUploadProgress(0);
+      setProcessingStatus('Iniciando upload...');
+
+      const res = await fetch('/start-processing', {
+        method: 'POST',
+        body: formData
       });
-    }, 200);
+
+      if (!res.ok) throw new Error(await res.text());
+
+      const data = await res.json();
+      setCurrentProcessId(data.processId);
+      
+    } catch (error) {
+      console.error("Erro no upload:", error);
+      setIsProcessing(false);
+      alert("Erro ao enviar arquivo.");
+    }
   };
 
   const toggleAiActive = () => {
@@ -204,7 +246,6 @@ export default function App() {
 
   const handleSaveRule = (updatedRule: KnowledgeRule) => {
     setKnowledgeRules(prev => prev.map(r => r.id === updatedRule.id ? updatedRule : r));
-    // Also update main config if needed
     setAiConfig(prev => ({
       ...prev,
       knowledgeRules: prev.knowledgeRules.map(r => r.id === updatedRule.id ? updatedRule : r)
@@ -273,7 +314,7 @@ export default function App() {
         />
         <StatCard 
           title="Taxa de Inaptidão" 
-          value="84%" 
+          value={stats.total > 0 ? "100%" : "0%"} 
           icon={AlertTriangle} 
           color="text-rose-600 bg-rose-600"
         />
@@ -358,7 +399,7 @@ export default function App() {
         {isProcessing && (
           <div className="mt-8 max-w-md mx-auto">
             <div className="flex justify-between text-sm font-medium mb-2 text-slate-600">
-              <span>Processando I.E. e CNPJs...</span>
+              <span>{processingStatus}</span>
               <span>{uploadProgress}%</span>
             </div>
             <div className="h-3 w-full bg-slate-100 rounded-full overflow-hidden">
@@ -383,8 +424,8 @@ export default function App() {
           <p className="text-slate-500">Gerencie todos os leads importados.</p>
         </div>
         <div className="flex gap-3">
-          <button className="btn-secondary">
-            <Filter size={18} /> Filtrar
+          <button className="btn-secondary" onClick={fetchCompanies}>
+            <RefreshCw size={18} /> Atualizar Lista
           </button>
           <button className="btn-primary">
             <FileSpreadsheet size={18} /> Exportar Excel
@@ -433,7 +474,7 @@ export default function App() {
                         company.situacaoCadastral === 'INAPTA' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'
                       }
                     `}>
-                      {company.situacaoCadastral}
+                      {company.situacaoCadastral || 'N/A'}
                     </span>
                   </td>
                   <td className="p-4 text-sm text-slate-600 max-w-xs truncate" title={company.motivoSituacao}>
@@ -443,15 +484,22 @@ export default function App() {
                   <td className="p-4">
                     <div className="flex items-center gap-2">
                       <div className={`w-2 h-2 rounded-full ${
-                        company.campaignStatus === CampaignStatus.PENDING ? 'bg-slate-300' :
+                        company.campaignStatus === CampaignStatus.PENDING || !company.campaignStatus ? 'bg-slate-300' :
                         company.campaignStatus === CampaignStatus.SENT ? 'bg-blue-500' :
                         company.campaignStatus === CampaignStatus.REPLIED ? 'bg-emerald-500' : 'bg-amber-500'
                       }`} />
-                      <span className="text-sm text-slate-600 capitalize">{company.campaignStatus}</span>
+                      <span className="text-sm text-slate-600 capitalize">{company.campaignStatus || 'Pendente'}</span>
                     </div>
                   </td>
                 </tr>
               ))}
+              {companies.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="p-8 text-center text-slate-400">
+                    Nenhuma empresa encontrada. Faça uma importação primeiro.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -463,7 +511,7 @@ export default function App() {
     // Filter companies
     const filteredCompanies = companies.filter(c => {
       // Filter by Campaign Status
-      const statusMatch = campaignFilter === 'all' || c.campaignStatus === campaignFilter;
+      const statusMatch = campaignFilter === 'all' || (c.campaignStatus || CampaignStatus.PENDING) === campaignFilter;
       // Filter by Reason (Motivo)
       const reasonMatch = campaignReasonFilter === 'all' || c.motivoSituacao === campaignReasonFilter;
       
@@ -635,7 +683,7 @@ export default function App() {
                               'bg-slate-100 text-slate-600'
                             }
                           `}>
-                            {company.campaignStatus === CampaignStatus.PENDING ? 'Pendente' : company.campaignStatus}
+                            {company.campaignStatus === CampaignStatus.PENDING || !company.campaignStatus ? 'Pendente' : company.campaignStatus}
                           </span>
                         </td>
                         <td className="p-4 text-right">
@@ -662,371 +710,288 @@ export default function App() {
       <div className="h-full flex flex-col gap-6 animate-fade-in">
         <div className="flex justify-between items-center">
           <div>
-            <h2 className="text-2xl font-bold text-slate-800">Base de Conhecimento</h2>
-            <p className="text-slate-500">Treine a IA para lidar com cada situação fiscal.</p>
+            <h2 className="text-2xl font-bold text-slate-800">Base de Conhecimento IA</h2>
+            <p className="text-slate-500">Ensine a IA a lidar com cada situação da SEFAZ.</p>
           </div>
+          <button className="btn-secondary" onClick={() => {
+            const newRule: KnowledgeRule = {
+              id: Date.now().toString(),
+              motivoSituacao: 'Novo Motivo',
+              diagnosis: '',
+              solution: '',
+              salesPitch: '',
+              isActive: true
+            };
+            setKnowledgeRules(prev => [...prev, newRule]);
+            setSelectedRuleId(newRule.id);
+          }}>
+            <Plus size={18} /> Nova Regra
+          </button>
         </div>
 
-        <div className="flex-1 min-h-0 grid grid-cols-12 gap-6">
+        <div className="flex gap-6 h-full min-h-0">
           {/* Rules List */}
-          <div className="col-span-12 md:col-span-4 lg:col-span-3 card-premium flex flex-col overflow-hidden">
-            <div className="p-4 border-b border-slate-100 bg-slate-50 font-semibold text-slate-700">
-              Motivos Identificados
-            </div>
-            <div className="overflow-y-auto flex-1 custom-scrollbar p-2 space-y-1">
-              {knowledgeRules.map(rule => (
-                <button
-                  key={rule.id}
-                  onClick={() => setSelectedRuleId(rule.id)}
-                  className={`w-full text-left p-3 rounded-xl text-sm transition-all duration-200 border
-                    ${selectedRuleId === rule.id 
-                      ? 'bg-brand-50 border-brand-200 text-brand-700 shadow-sm' 
-                      : 'bg-white border-transparent text-slate-600 hover:bg-slate-50 hover:border-slate-200'
-                    }
-                  `}
-                >
-                  <div className="font-medium truncate mb-1">{rule.motivoSituacao}</div>
-                  <div className="flex items-center gap-2 text-xs opacity-70">
-                    <div className={`w-2 h-2 rounded-full ${rule.isActive ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                    {rule.isActive ? 'Ativo' : 'Inativo'}
-                  </div>
-                </button>
-              ))}
-              
-              <button className="w-full p-3 rounded-xl border border-dashed border-slate-300 text-slate-400 hover:border-brand-400 hover:text-brand-600 hover:bg-brand-50/50 transition-all flex items-center justify-center gap-2 text-sm mt-2">
-                <Plus size={16} /> Adicionar Nova Regra
-              </button>
-            </div>
+          <div className="w-80 flex flex-col bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+             <div className="p-4 bg-slate-50 border-b border-slate-100">
+               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Regras de Negócio</span>
+             </div>
+             <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
+               {knowledgeRules.map(rule => (
+                 <button
+                   key={rule.id}
+                   onClick={() => setSelectedRuleId(rule.id)}
+                   className={`w-full text-left p-3 rounded-xl transition-all duration-200 ${
+                     selectedRuleId === rule.id 
+                       ? 'bg-brand-50 border-brand-200 text-brand-700 shadow-sm' 
+                       : 'hover:bg-slate-50 text-slate-600 border border-transparent'
+                   }`}
+                 >
+                   <div className="font-medium text-sm truncate">{rule.motivoSituacao}</div>
+                   <div className="text-xs text-slate-400 mt-1 truncate">
+                     {rule.salesPitch ? 'Configurado' : 'Pendente'}
+                   </div>
+                 </button>
+               ))}
+             </div>
           </div>
 
           {/* Editor & Simulator */}
-          <div className="col-span-12 md:col-span-8 lg:col-span-9 flex flex-col gap-6 overflow-y-auto custom-scrollbar pr-1">
-            {selectedRule ? (
-              <>
-                <div className="card-premium p-6">
-                  <div className="flex justify-between items-start mb-6">
-                    <div>
-                      <h3 className="text-lg font-bold text-slate-800">{selectedRule.motivoSituacao}</h3>
-                      <p className="text-sm text-slate-400">Configure como a IA deve reagir a este problema.</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <span className="text-sm text-slate-600">Regra Ativa</span>
-                        <input 
-                          type="checkbox" 
-                          checked={selectedRule.isActive}
-                          onChange={(e) => handleSaveRule({...selectedRule, isActive: e.target.checked})}
-                          className="w-5 h-5 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
-                        />
-                      </label>
-                    </div>
-                  </div>
+          <div className="flex-1 grid grid-cols-2 gap-6 min-h-0">
+             {selectedRule ? (
+               <>
+                {/* Editor */}
+                <div className="card-premium p-6 overflow-y-auto custom-scrollbar">
+                   <div className="flex justify-between items-center mb-6">
+                     <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                       <Settings size={18} className="text-slate-400" />
+                       Configurar Regra
+                     </h3>
+                     <div className="flex gap-2">
+                       <button 
+                          className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors"
+                          title="Excluir Regra"
+                          onClick={() => {
+                            setKnowledgeRules(prev => prev.filter(r => r.id !== selectedRule.id));
+                            setSelectedRuleId(null);
+                          }}
+                        >
+                          <Trash2 size={18} />
+                       </button>
+                     </div>
+                   </div>
 
-                  <div className="space-y-6">
-                    <div>
-                      <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
-                        <AlertCircle size={16} className="text-amber-500" />
-                        Diagnóstico (O que é isso?)
-                      </label>
-                      <textarea 
-                        className="input-premium h-24 resize-none"
-                        value={selectedRule.diagnosis}
-                        onChange={(e) => handleSaveRule({...selectedRule, diagnosis: e.target.value})}
-                        placeholder="Explique o problema técnico para a IA entender o contexto..."
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                   <div className="space-y-5">
                       <div>
-                        <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
-                          <CheckCircle2 size={16} className="text-emerald-500" />
-                          Solução Técnica (O que fazer?)
-                        </label>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Gatilho (Motivo na SEFAZ)</label>
+                        <input 
+                          type="text" 
+                          className="input-premium" 
+                          value={selectedRule.motivoSituacao}
+                          onChange={(e) => handleSaveRule({...selectedRule, motivoSituacao: e.target.value})}
+                        />
+                        <p className="text-xs text-slate-400 mt-1">O texto exato que aparece na consulta da SEFAZ.</p>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Diagnóstico (O que é?)</label>
                         <textarea 
-                          className="input-premium h-32 resize-none"
+                          className="input-premium h-24" 
+                          value={selectedRule.diagnosis}
+                          onChange={(e) => handleSaveRule({...selectedRule, diagnosis: e.target.value})}
+                          placeholder="Ex: O cliente excedeu o limite de compras do MEI..."
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Solução Técnica</label>
+                        <textarea 
+                          className="input-premium h-24" 
                           value={selectedRule.solution}
                           onChange={(e) => handleSaveRule({...selectedRule, solution: e.target.value})}
-                          placeholder="Liste os passos para regularizar..."
+                          placeholder="Ex: Desenquadramento e migração para Simples Nacional..."
                         />
                       </div>
+
                       <div>
-                        <label className="block text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
-                          <Megaphone size={16} className="text-brand-500" />
-                          Argumento de Venda (Pitch)
-                        </label>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Argumento de Venda (Pitch)</label>
                         <textarea 
-                          className="input-premium h-32 resize-none"
+                          className="input-premium h-32 border-brand-200 bg-brand-50/30" 
                           value={selectedRule.salesPitch}
                           onChange={(e) => handleSaveRule({...selectedRule, salesPitch: e.target.value})}
-                          placeholder="Como convencer o cliente a fechar o serviço?"
+                          placeholder="Ex: Sua empresa cresceu, isso é ótimo! Mas a SEFAZ travou. Eu resolvo hoje..."
                         />
                       </div>
-                    </div>
-                  </div>
+                   </div>
                 </div>
 
-                <div className="card-premium p-0 overflow-hidden bg-slate-900 border-slate-800 text-slate-200">
-                   <div className="p-3 bg-slate-950 flex items-center gap-2 border-b border-slate-800">
-                     <Terminal size={16} className="text-emerald-400" />
-                     <span className="text-xs font-mono text-emerald-400">SIMULADOR DE RESPOSTA IA</span>
+                {/* Simulator */}
+                <div className="card-premium p-6 bg-slate-50 flex flex-col">
+                   <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+                     <Terminal size={18} className="text-slate-400" />
+                     Simulador de Resposta
+                   </h3>
+                   
+                   <div className="flex-1 bg-white border border-slate-200 rounded-xl p-4 shadow-inner overflow-y-auto mb-4 font-mono text-sm text-slate-600 whitespace-pre-wrap">
+                      {getAiResponse(selectedRule.motivoSituacao)}
                    </div>
-                   <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
-                      <div>
-                        <p className="text-xs font-mono text-slate-500 mb-2 uppercase">Entrada Simulada</p>
-                        <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 text-sm mb-4">
-                          <p className="text-slate-300">Empresa: <span className="text-white font-semibold">MERCADINHO EXEMPLO</span></p>
-                          <p className="text-slate-300">Situação: <span className="text-rose-400 font-semibold">{selectedRule.motivoSituacao}</span></p>
-                          <p className="text-slate-500 mt-2 italic">"Cliente: Olá, recebi sua mensagem. O que está acontecendo com minha empresa?"</p>
-                        </div>
-                        <button className="btn-primary w-full py-2 text-sm">
-                          <RefreshCw size={14} /> Gerar Resposta Teste
-                        </button>
-                      </div>
-                      <div className="relative">
-                        <p className="text-xs font-mono text-slate-500 mb-2 uppercase">Saída da IA</p>
-                         <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 text-sm h-full font-mono text-emerald-50 leading-relaxed whitespace-pre-wrap">
-                           {getAiResponse(selectedRule.motivoSituacao)}
-                         </div>
-                      </div>
-                   </div>
+
+                   <button className="btn-secondary w-full" onClick={() => {}}>
+                     <RefreshCw size={16} /> Regenerar Resposta
+                   </button>
                 </div>
-              </>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                <BookOpen size={48} className="mb-4 opacity-20" />
-                <p>Selecione uma regra ao lado para editar.</p>
-              </div>
-            )}
+               </>
+             ) : (
+               <div className="col-span-2 flex items-center justify-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                 Selecione uma regra para editar
+               </div>
+             )}
           </div>
         </div>
       </div>
     );
   };
 
-  const WhatsappView = () => (
-    <div className="max-w-4xl mx-auto space-y-8 animate-slide-up">
-      <div className="text-center">
-        <h2 className="text-3xl font-bold text-slate-800 mb-2">Conexão WhatsApp</h2>
-        <p className="text-slate-500 text-lg">Conecte seu número para a IA disparar mensagens.</p>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <div className="card-premium p-8 flex flex-col items-center justify-center text-center">
-          <div className="relative mb-6">
-            <div className="w-64 h-64 bg-slate-100 rounded-xl flex items-center justify-center border-2 border-slate-200">
-              {whatsappSession.status === 'connected' ? (
-                <CheckCircle2 size={80} className="text-emerald-500" />
-              ) : (
-                <img 
-                  src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=ExampleQRCodeForDemo" 
-                  alt="QR Code" 
-                  className="w-48 h-48 opacity-50 blur-[2px]" 
-                />
-              )}
-            </div>
-            {whatsappSession.status !== 'connected' && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="bg-white/90 backdrop-blur px-6 py-4 rounded-xl shadow-lg border border-slate-100">
-                  <p className="text-sm font-bold text-slate-800 mb-2">Simulação</p>
-                  <button 
-                    onClick={() => setWhatsappSession({ status: 'connected', phoneNumber: '+55 71 99999-9999' })}
-                    className="btn-primary py-2 text-sm"
-                  >
-                    Simular Conexão
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-          
-          <div className="flex items-center gap-2 mb-2">
-            <div className={`w-3 h-3 rounded-full ${whatsappSession.status === 'connected' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-            <span className="font-semibold text-slate-700">
-              {whatsappSession.status === 'connected' ? 'Conectado' : 'Desconectado'}
-            </span>
-          </div>
-          {whatsappSession.status === 'connected' && (
-            <p className="text-slate-500">{whatsappSession.phoneNumber}</p>
-          )}
-        </div>
-
-        <div className="space-y-6">
-          <div className="card-premium p-6">
-            <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-              <Settings size={18} /> Configurações da Sessão
-            </h3>
-            <div className="space-y-4">
-              <div className="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
-                <span className="text-sm font-medium text-slate-600">Disparo Automático</span>
-                <div className="w-10 h-6 bg-slate-200 rounded-full relative cursor-not-allowed">
-                  <div className="w-4 h-4 bg-white rounded-full absolute top-1 left-1" />
-                </div>
-              </div>
-              <div className="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
-                 <span className="text-sm font-medium text-slate-600">IA Respondendo</span>
-                 <label className="relative inline-flex items-center cursor-pointer">
-                  <input type="checkbox" checked={aiConfig.aiActive} onChange={toggleAiActive} className="sr-only peer" />
-                  <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <div className="card-premium p-6 bg-slate-900 border-slate-800 text-slate-300 font-mono text-xs h-48 overflow-y-auto custom-scrollbar">
-            <div className="text-emerald-400 mb-2">$ system logs --tail</div>
-            <p>[10:42:12] Initializing Baileys socket...</p>
-            <p>[10:42:13] Connecting to WS...</p>
-            {whatsappSession.status === 'connected' && (
-              <>
-                <p className="text-emerald-400">[10:42:15] Connection authenticated!</p>
-                <p>[10:42:15] Syncing contacts...</p>
-                <p>[10:42:16] Ready to send messages.</p>
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderContent = () => {
-    switch(activeTab) {
-      case 'dashboard': return <DashboardView />;
-      case 'import': return <ImportView />;
-      case 'empresas': return <EmpresasView />;
-      case 'campanhas': return <CampaignView />;
-      case 'knowledge': return <KnowledgeBaseView />;
-      case 'whatsapp': return <WhatsappView />;
-      default: return <DashboardView />;
-    }
-  };
+  // --- Render ---
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden">
       {/* Sidebar */}
-      <aside 
-        className={`bg-slate-900 text-slate-300 flex flex-col transition-all duration-300 border-r border-slate-800 shadow-2xl z-20
-          ${sidebarOpen ? 'w-72' : 'w-20'}
-        `}
+      <div 
+        className={`bg-slate-900 text-white transition-all duration-300 flex flex-col shadow-2xl relative z-20
+        ${sidebarOpen ? 'w-64' : 'w-20'}`}
       >
-        <div className="h-20 flex items-center px-6 border-b border-slate-800">
-          <div className="flex items-center gap-3 overflow-hidden">
-            <div className="min-w-[32px] w-8 h-8 bg-gradient-to-br from-brand-500 to-brand-600 rounded-lg flex items-center justify-center text-white font-bold shadow-lg shadow-brand-500/20">
-              V
-            </div>
-            <span className={`font-bold text-xl text-white tracking-tight whitespace-nowrap transition-opacity duration-300 ${sidebarOpen ? 'opacity-100' : 'opacity-0'}`}>
-              CRM VIRGULA
-            </span>
+        <div className="p-6 flex items-center gap-3 border-b border-slate-800">
+          <div className="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center shrink-0 shadow-[0_0_15px_rgba(37,99,235,0.5)]">
+            <span className="font-bold text-lg">C</span>
           </div>
+          {sidebarOpen && (
+            <div className="animate-fade-in">
+              <h1 className="font-bold text-lg tracking-tight">CRM VIRGULA</h1>
+            </div>
+          )}
         </div>
 
-        <div className="flex-1 overflow-y-auto py-6 px-3 custom-scrollbar">
-          <div className="space-y-8">
-            <div>
-              {sidebarOpen && <h3 className="px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Visão Geral</h3>}
-              <SidebarItem 
-                icon={LayoutDashboard} 
-                label="Dashboard" 
-                active={activeTab === 'dashboard'} 
-                onClick={() => setActiveTab('dashboard')} 
-                collapsed={!sidebarOpen}
-              />
-            </div>
-
-            <div>
-              {sidebarOpen && <h3 className="px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Aquisição</h3>}
-              <SidebarItem 
-                icon={Upload} 
-                label="Importar Dados" 
-                active={activeTab === 'import'} 
-                onClick={() => setActiveTab('import')} 
-                collapsed={!sidebarOpen}
-              />
-              <SidebarItem 
-                icon={Briefcase} 
-                label="Base de Empresas" 
-                active={activeTab === 'empresas'} 
-                onClick={() => setActiveTab('empresas')} 
-                collapsed={!sidebarOpen}
-              />
-            </div>
-
-            <div>
-              {sidebarOpen && <h3 className="px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Vendas</h3>}
-              <SidebarItem 
-                icon={Megaphone} 
-                label="Gestão de Campanhas" 
-                active={activeTab === 'campanhas'} 
-                onClick={() => setActiveTab('campanhas')} 
-                collapsed={!sidebarOpen}
-              />
-              <SidebarItem 
-                icon={MessageCircle} 
-                label="Conexão WhatsApp" 
-                active={activeTab === 'whatsapp'} 
-                onClick={() => setActiveTab('whatsapp')} 
-                collapsed={!sidebarOpen}
-              />
-            </div>
-
-            <div>
-              {sidebarOpen && <h3 className="px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Inteligência</h3>}
-              <SidebarItem 
-                icon={BookOpen} 
-                label="Treinamento IA" 
-                active={activeTab === 'knowledge'} 
-                onClick={() => setActiveTab('knowledge')} 
-                collapsed={!sidebarOpen}
-              />
-            </div>
+        <nav className="flex-1 p-4 space-y-6 overflow-y-auto custom-scrollbar">
+          <div>
+            {sidebarOpen && <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 px-4">Visão Geral</p>}
+            <SidebarItem 
+              icon={LayoutDashboard} 
+              label="Dashboard" 
+              active={activeTab === 'dashboard'} 
+              onClick={() => setActiveTab('dashboard')} 
+              collapsed={!sidebarOpen}
+            />
           </div>
-        </div>
 
+          <div>
+            {sidebarOpen && <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 px-4">Aquisição</p>}
+            <SidebarItem 
+              icon={Upload} 
+              label="Importar Dados" 
+              active={activeTab === 'import'} 
+              onClick={() => setActiveTab('import')} 
+              collapsed={!sidebarOpen}
+            />
+            <SidebarItem 
+              icon={Briefcase} 
+              label="Base de Empresas" 
+              active={activeTab === 'empresas'} 
+              onClick={() => setActiveTab('empresas')} 
+              collapsed={!sidebarOpen}
+            />
+          </div>
+
+          <div>
+            {sidebarOpen && <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 px-4">Vendas</p>}
+            <SidebarItem 
+              icon={Megaphone} 
+              label="Gestão de Campanhas" 
+              active={activeTab === 'campanhas'} 
+              onClick={() => setActiveTab('campanhas')} 
+              collapsed={!sidebarOpen}
+            />
+            <SidebarItem 
+              icon={MessageCircle} 
+              label="Conexão WhatsApp" 
+              active={activeTab === 'whatsapp'} 
+              onClick={() => setActiveTab('whatsapp')} 
+              collapsed={!sidebarOpen}
+            />
+          </div>
+
+          <div>
+             {sidebarOpen && <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 px-4">Inteligência</p>}
+             <SidebarItem 
+              icon={BookOpen} 
+              label="Treinamento IA" 
+              active={activeTab === 'knowledge'} 
+              onClick={() => setActiveTab('knowledge')} 
+              collapsed={!sidebarOpen}
+            />
+             <SidebarItem 
+              icon={Settings} 
+              label="Configurações" 
+              active={activeTab === 'config'} 
+              onClick={() => setActiveTab('config')} 
+              collapsed={!sidebarOpen}
+            />
+          </div>
+        </nav>
+
+        {/* AI Status Footer */}
         <div className="p-4 border-t border-slate-800 bg-slate-900/50">
-           <button 
-             onClick={toggleAiActive}
-             className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-all duration-300 ${aiConfig.aiActive ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
-           >
-             <Power size={20} className={aiConfig.aiActive ? 'text-emerald-400' : 'text-slate-500'} />
-             {sidebarOpen && (
-               <div className="flex flex-col text-left">
-                 <span className="text-xs font-medium uppercase tracking-wider">Status do Bot</span>
-                 <span className="text-sm font-bold">{aiConfig.aiActive ? 'ATIVO' : 'PAUSADO'}</span>
-               </div>
-             )}
-           </button>
+          <div className={`rounded-xl p-3 flex items-center gap-3 transition-colors ${aiConfig.aiActive ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-slate-800'}`}>
+            <div className={`w-2 h-2 rounded-full shrink-0 ${aiConfig.aiActive ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+            {sidebarOpen && (
+              <div className="overflow-hidden">
+                <p className="text-xs font-bold text-slate-300">Status do Bot</p>
+                <p className="text-xs text-slate-500 truncate">{aiConfig.aiActive ? 'Respondendo...' : 'Desconectado.'}</p>
+              </div>
+            )}
+          </div>
         </div>
-      </aside>
+      </div>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
-        {/* Header */}
-        <header className="h-20 bg-white/80 backdrop-blur-md border-b border-slate-200 flex items-center justify-between px-8 z-10">
+      <div className="flex-1 flex flex-col h-full overflow-hidden relative">
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0 z-10">
           <button 
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 transition-colors"
+            className="p-2 text-slate-400 hover:text-brand-600 hover:bg-slate-50 rounded-lg transition-colors"
           >
-            <Menu size={24} />
+            <Menu size={20} />
           </button>
-
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-brand-50 text-brand-700 rounded-full text-sm font-medium border border-brand-100">
-              <span className="w-2 h-2 rounded-full bg-brand-500 animate-pulse"></span>
-              Sistema Online
-            </div>
-            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-700 to-slate-900 text-white flex items-center justify-center font-bold shadow-lg shadow-slate-200">
-              AD
-            </div>
+             <div className="flex items-center gap-2 px-3 py-1.5 bg-brand-50 text-brand-700 rounded-full text-xs font-bold border border-brand-100">
+               <Briefcase size={14} /> CRM VIRGULA
+             </div>
           </div>
         </header>
 
-        {/* Scrollable Content Area */}
-        <div className="flex-1 overflow-auto p-8 custom-scrollbar relative">
-          <div className="max-w-[1600px] mx-auto h-full">
-            {renderContent()}
+        <main className="flex-1 overflow-y-auto p-6 custom-scrollbar relative">
+          <div className="max-w-7xl mx-auto h-full">
+            {activeTab === 'dashboard' && <DashboardView />}
+            {activeTab === 'import' && <ImportView />}
+            {activeTab === 'empresas' && <EmpresasView />}
+            {activeTab === 'campanhas' && <CampaignView />}
+            {activeTab === 'knowledge' && <KnowledgeBaseView />}
+            {activeTab === 'whatsapp' && (
+              <div className="flex flex-col items-center justify-center h-full text-slate-400 animate-fade-in">
+                <MessageCircle size={64} className="mb-4 opacity-20" />
+                <h2 className="text-xl font-bold text-slate-600">Módulo WhatsApp</h2>
+                <p>O QR Code do Baileys aparecerá aqui quando o backend estiver conectado.</p>
+              </div>
+            )}
+             {activeTab === 'config' && (
+              <div className="flex flex-col items-center justify-center h-full text-slate-400 animate-fade-in">
+                <Settings size={64} className="mb-4 opacity-20" />
+                <h2 className="text-xl font-bold text-slate-600">Configurações</h2>
+                <p>Ajustes de sistema e API.</p>
+              </div>
+            )}
           </div>
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
