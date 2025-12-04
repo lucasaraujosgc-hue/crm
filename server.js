@@ -27,22 +27,20 @@ if (!fs.existsSync('./whatsapp_auth')) {
 }
 
 // Configuração ROBUSTA do Puppeteer para Docker
-// Isso corrige o erro "Protocol error ... Session closed"
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: './whatsapp_auth' }),
     puppeteer: {
         headless: true,
-        // Importante: Usar o Chrome instalado via apt-get no Dockerfile
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage', // CRÍTICO para Docker (evita crash de memória)
+            '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--single-process', 
             '--disable-gpu'
+            // Removido --single-process pois causa crash em algumas versões do Docker
         ]
     }
 });
@@ -77,23 +75,25 @@ client.on('disconnected', (reason) => {
     console.log('[WhatsApp] Desconectado:', reason);
     whatsappStatus = 'disconnected';
     qrCodeData = null;
-    // Reinicia o cliente após desconexão
+    // Tenta reconectar após 5s
     setTimeout(() => {
-        try {
-            client.initialize();
-        } catch (e) {
-            console.error("Erro ao reiniciar cliente:", e);
-        }
+        initializeWhatsApp();
     }, 5000);
 });
 
-// Inicializa o cliente com proteção
-try {
-    console.log('[WhatsApp] Inicializando cliente...');
-    client.initialize();
-} catch (e) {
-    console.error("[WhatsApp] Erro fatal ao iniciar:", e);
+// Função de inicialização segura
+async function initializeWhatsApp() {
+    try {
+        console.log('[WhatsApp] Inicializando cliente...');
+        await client.initialize();
+    } catch (e) {
+        console.error("[WhatsApp] Erro fatal ao iniciar (tentando novamente em 10s):", e.message);
+        setTimeout(initializeWhatsApp, 10000);
+    }
 }
+
+// Inicia o WhatsApp
+initializeWhatsApp();
 
 // API WhatsApp para o Frontend
 app.get('/api/whatsapp/status', (req, res) => {
@@ -101,15 +101,13 @@ app.get('/api/whatsapp/status', (req, res) => {
 });
 
 // --- Proxy para o Backend Python (Scraping) ---
-// Configuração com tratamento de erro para evitar crash de JSON no frontend
 const pythonProxy = createProxyMiddleware({
     target: 'http://127.0.0.1:5000',
     changeOrigin: true,
     ws: true, 
-    logLevel: 'error', // Reduz logs para evitar poluição
+    logLevel: 'error', 
     onError: (err, req, res) => {
         console.error('[Proxy Error] Falha ao conectar com Python:', err.message);
-        // Retorna JSON válido para não quebrar o frontend
         if (!res.headersSent) {
             res.status(502).json({ error: 'Backend Python indisponível ou iniciando...' });
         }
