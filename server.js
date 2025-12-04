@@ -12,7 +12,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-// Easypanel injeta a porta via PORT, mas forçamos 3000 se não vier
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
@@ -27,15 +26,18 @@ if (!fs.existsSync('./whatsapp_auth')) {
     fs.mkdirSync('./whatsapp_auth');
 }
 
-// Configuração do Cliente WhatsApp com argumentos críticos para Docker
+// Configuração ROBUSTA do Puppeteer para Docker
+// Isso corrige o erro "Protocol error ... Session closed"
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: './whatsapp_auth' }),
     puppeteer: {
         headless: true,
+        // Importante: Usar o Chrome instalado via apt-get no Dockerfile
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
+            '--disable-dev-shm-usage', // CRÍTICO para Docker (evita crash de memória)
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
@@ -46,12 +48,12 @@ const client = new Client({
 });
 
 client.on('qr', async (qr) => {
-    console.log('[WhatsApp] QR Code gerado/atualizado');
+    console.log('[WhatsApp] QR Code gerado');
     try {
         qrCodeData = await QRCode.toDataURL(qr);
         whatsappStatus = 'qr_ready';
     } catch (err) {
-        console.error('[WhatsApp] Erro ao gerar QR imagem', err);
+        console.error('[WhatsApp] Erro ao gerar imagem QR', err);
     }
 });
 
@@ -62,7 +64,7 @@ client.on('ready', () => {
 });
 
 client.on('authenticated', () => {
-    console.log('[WhatsApp] Sessão Autenticada');
+    console.log('[WhatsApp] Autenticado');
     whatsappStatus = 'connecting';
 });
 
@@ -75,10 +77,17 @@ client.on('disconnected', (reason) => {
     console.log('[WhatsApp] Desconectado:', reason);
     whatsappStatus = 'disconnected';
     qrCodeData = null;
-    client.initialize();
+    // Reinicia o cliente após desconexão
+    setTimeout(() => {
+        try {
+            client.initialize();
+        } catch (e) {
+            console.error("Erro ao reiniciar cliente:", e);
+        }
+    }, 5000);
 });
 
-// Inicializa o cliente
+// Inicializa o cliente com proteção
 try {
     console.log('[WhatsApp] Inicializando cliente...');
     client.initialize();
@@ -92,15 +101,18 @@ app.get('/api/whatsapp/status', (req, res) => {
 });
 
 // --- Proxy para o Backend Python (Scraping) ---
-// O Python roda localmente na porta 5000 dentro do container
+// Configuração com tratamento de erro para evitar crash de JSON no frontend
 const pythonProxy = createProxyMiddleware({
     target: 'http://127.0.0.1:5000',
     changeOrigin: true,
     ws: true, 
-    logLevel: 'debug',
+    logLevel: 'error', // Reduz logs para evitar poluição
     onError: (err, req, res) => {
-        console.error('[Proxy Error] Falha ao conectar com Python:', err);
-        res.status(502).send('Backend Python não está respondendo.');
+        console.error('[Proxy Error] Falha ao conectar com Python:', err.message);
+        // Retorna JSON válido para não quebrar o frontend
+        if (!res.headersSent) {
+            res.status(502).json({ error: 'Backend Python indisponível ou iniciando...' });
+        }
     }
 });
 
@@ -116,7 +128,7 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-// Importante: Bind no 0.0.0.0 para Docker
+// Bind no 0.0.0.0 para Docker
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Node] Servidor Principal rodando na porta ${PORT}`);
 });
