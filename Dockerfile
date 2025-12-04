@@ -16,7 +16,7 @@ RUN npx vite build
 # Stage 2: Final Image (Node + Python + Chrome)
 FROM node:18-slim
 
-# Install Python and Chrome dependencies
+# Install Python, Chrome and Utilities
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     unzip \
     curl \
+    dos2unix \
     ca-certificates \
     fonts-liberation \
     libasound2 \
@@ -88,8 +89,11 @@ COPY server.js .
 COPY app.py .
 COPY start.sh .
 
-# Give execution permission to start script
-RUN chmod +x start.sh
+# --- CORREÇÃO DO ERRO 'NOT FOUND' ---
+# 1. Converte quebras de linha do Windows para Linux
+# 2. Dá permissão de execução
+RUN dos2unix start.sh && \
+    chmod +x start.sh
 
 # Create uploads directory
 RUN mkdir -p sefaz_uploads
@@ -101,5 +105,5 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
 # Expose the main port (Node.js)
 EXPOSE 3000
 
-# Start both services via script
-CMD ["./start.sh"]
+# Start both services using sh explicitamente
+CMD ["/bin/sh", "start.sh"]
