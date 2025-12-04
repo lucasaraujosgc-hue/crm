@@ -385,7 +385,6 @@ def get_all_results():
 def get_results_by_id(process_id):
     """Retorna resultados de um lote específico após importação."""
     resultados = Resultado.query.filter_by(consulta_id=process_id).all()
-    # Reutiliza lógica de formatação se quiser, ou simplifica
     data = []
     for r in resultados:
         data.append({
