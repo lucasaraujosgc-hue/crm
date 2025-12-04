@@ -1,16 +1,15 @@
-#!/bin/bash
+#!/bin/sh
 
-echo "[Start] Iniciando container..."
+echo "--- INICIANDO CONTAINER ---"
 
 # Inicia o Backend Python (Flask) em segundo plano na porta 5000 (Localhost)
-# O Node.js vai conversar com ele via Proxy
-echo "[Start] Iniciando Gunicorn (Python)..."
+echo "1. Iniciando Python (Gunicorn)..."
 gunicorn -b 127.0.0.1:5000 --timeout 120 --log-level debug app:app &
 
 # Aguarda 5 segundos para o Python subir
-echo "[Start] Aguardando Python iniciar..."
+echo "2. Aguardando Python..."
 sleep 5
 
 # Inicia o Servidor Principal Node.js
-echo "[Start] Iniciando Node.js..."
+echo "3. Iniciando Node.js (Server)..."
 node server.js
