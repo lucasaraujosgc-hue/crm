@@ -20,7 +20,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
 
 # --- Configuração Inicial ---
@@ -90,9 +89,7 @@ class Resultado(db.Model):
     last_contacted = db.Column(db.DateTime, nullable=True)
     notes = db.Column(db.Text, nullable=True)
 
-# --- CRIAÇÃO DAS TABELAS (CRÍTICO PARA GUNICORN) ---
-# Executa a criação das tabelas no contexto global para garantir
-# que elas existam quando o Gunicorn iniciar o worker.
+# --- CRIAÇÃO DAS TABELAS ---
 with app.app_context():
     db.create_all()
 
@@ -113,8 +110,11 @@ def configurar_navegador():
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--disable-extensions')
         
-        # Como instalamos o Chrome via apt-get, ele está no PATH padrão
-        service = Service(ChromeDriverManager().install())
+        # Correção: Usar o driver instalado no sistema pelo Dockerfile
+        # Em vez de tentar baixar com webdriver_manager (que falhava)
+        chromedriver_path = os.environ.get('CHROMEDRIVER_PATH', '/usr/bin/chromedriver')
+        
+        service = Service(executable_path=chromedriver_path)
         driver = webdriver.Chrome(service=service, options=options)
         return driver
     except Exception as e:
@@ -396,5 +396,4 @@ def get_results_by_id(process_id):
     return jsonify({'results': data})
 
 if __name__ == '__main__':
-    # Mantemos aqui também para rodar localmente (python app.py)
     app.run(host='0.0.0.0', port=5000)
