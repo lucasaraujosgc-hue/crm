@@ -89,13 +89,12 @@ class Resultado(db.Model):
     last_contacted = db.Column(db.DateTime, nullable=True)
     notes = db.Column(db.Text, nullable=True)
 
-# --- Criação das Tabelas com Proteção ---
+# --- Criação das Tabelas ---
 with app.app_context():
     try:
         db.create_all()
     except Exception as e:
-        # Se ocorrer erro de concorrência (tabela já existe), apenas ignora e continua
-        logging.warning(f"Aviso na criação do DB (provavelmente já existe): {e}")
+        logging.warning(f"Aviso DB: {e}")
 
 # --- Funções Auxiliares ---
 
@@ -103,10 +102,8 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def configurar_navegador():
-    """Configura o Chrome para rodar no Docker (Headless)."""
     try:
         options = Options()
-        # Configurações críticas para Docker/Linux
         options.add_argument('--headless=new') 
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
@@ -114,11 +111,8 @@ def configurar_navegador():
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--disable-extensions')
         
-        # IMPORTANTE: Usa o caminho definido no Dockerfile
-        # Isso corrige o "Exec format error" e problemas de versão
         chromedriver_path = '/usr/bin/chromedriver'
         service = Service(executable_path=chromedriver_path)
-        
         driver = webdriver.Chrome(service=service, options=options)
         return driver
     except Exception as e:
@@ -126,7 +120,6 @@ def configurar_navegador():
         raise
 
 def extrair_ie_pdf(filepath):
-    """Lê o PDF e extrai números que parecem Inscrição Estadual."""
     ies = []
     try:
         logging.info(f"Lendo PDF: {filepath}")
@@ -140,27 +133,19 @@ def extrair_ie_pdf(filepath):
                 if len(ie_limpa) == 9:
                     ies.append(ie_limpa)
         doc.close()
-        # Remove duplicatas
-        unique_ies = list(set(ies))
-        logging.info(f"Encontradas {len(unique_ies)} IEs únicas")
-        return unique_ies
+        return list(set(ies))
     except Exception as e:
         logging.error(f"Erro ao ler PDF: {e}")
         return []
 
 def consultar_ie(driver, wait, ie):
-    """Navega no site da SEFAZ."""
     try:
         driver.get('https://portal.sefaz.ba.gov.br/scripts/cadastro/cadastroBa/consultaBa.asp')
-        
         campo_ie = wait.until(EC.presence_of_element_located((By.NAME, 'IE')))
         campo_ie.clear()
         campo_ie.send_keys(ie)
-        
         botao = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='submit' and @name='B2' and contains(@value, 'IE')]")))
         botao.click()
-        
-        # Espera carregar a página de resultado
         wait.until(EC.url_contains('result.asp'))
         return True
     except Exception as e:
@@ -168,104 +153,82 @@ def consultar_ie(driver, wait, ie):
         return False
 
 def extrair_dados_resultado(driver, inscricao_estadual):
-    """Faz o parser do HTML da SEFAZ."""
     try:
-        # Garante que a tabela carregou
-        WebDriverWait(driver, 5).until(
-            EC.presence_of_element_located((By.XPATH, "//td[contains(., 'Consulta Básica ao Cadastro do ICMS da Bahia')]"))
-        )
-        
+        WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//td[contains(., 'Consulta Básica ao Cadastro do ICMS da Bahia')]")))
         html = driver.page_source
         soup = BeautifulSoup(html, 'html.parser')
         
-        dados = {
-            'Inscrição Estadual': inscricao_estadual,
-            'Status': 'Sucesso',
-            'Motivo Situação Cadastral': 'Não informado'
-        }
+        dados = { 'Inscrição Estadual': inscricao_estadual, 'Status': 'Sucesso', 'Motivo Situação Cadastral': 'Não informado' }
+        def limpar_texto(t): return unescape(str(t)).replace('\xa0', ' ').strip() if t else None
 
-        def limpar_texto(texto):
-            if not texto: return None
-            return unescape(str(texto)).replace('\xa0', ' ').strip()
-
-        # Mapeamento de campos (Chave no BD : Texto na Tela)
         campos_map = {
-            'CNPJ': ['CNPJ:'],
-            'Razão Social': ['Razão Social:', 'Raz&atilde;o Social:'],
-            'Nome Fantasia': ['Nome Fantasia:'],
-            'Unidade de Fiscalização': ['Unidade de Fiscalização:', 'Unidade de Fiscaliza&ccedil;&atilde;o:'],
-            'Logradouro': ['Logradouro:'],
-            'Bairro/Distrito': ['Bairro/Distrito:'],
-            'Município': ['Município:', 'Munic&iacute;pio:'],
-            'UF': ['UF:'],
-            'CEP': ['CEP:'],
-            'Telefone': ['Telefone:'],
-            'E-mail': ['E-mail:'],
-            'Condição': ['Condição:', 'Condi&ccedil;&atilde;o:'],
-            'Forma de pagamento': ['Forma de pagamento:'],
-            'Situação Cadastral Vigente': ['Situação Cadastral Vigente:', 'Situa&ccedil;&atilde;o Cadastral Vigente:'],
-            'Motivo Situação Cadastral': ['Motivo desta Situação Cadastral:', 'Motivo desta Situa&ccedil;&atilde;o Cadastral:'],
-            'Data Situação Cadastral': ['Data desta Situação Cadastral:', 'Data desta Situa&ccedil;&atilde;o Cadastral:'],
-            'Nome (Contador)': ['Nome:']
+            'CNPJ': ['CNPJ:'], 'Razão Social': ['Razão Social:'], 'Nome Fantasia': ['Nome Fantasia:'],
+            'Unidade de Fiscalização': ['Unidade de Fiscalização:'], 'Logradouro': ['Logradouro:'],
+            'Bairro/Distrito': ['Bairro/Distrito:'], 'Município': ['Município:'], 'UF': ['UF:'],
+            'CEP': ['CEP:'], 'Telefone': ['Telefone:'], 'E-mail': ['E-mail:'],
+            'Condição': ['Condição:'], 'Forma de pagamento': ['Forma de pagamento:'],
+            'Situação Cadastral Vigente': ['Situação Cadastral Vigente:'],
+            'Motivo Situação Cadastral': ['Motivo desta Situação Cadastral:'],
+            'Data Situação Cadastral': ['Data desta Situação Cadastral:'], 'Nome (Contador)': ['Nome:']
         }
 
         for campo, labels in campos_map.items():
             for label in labels:
-                # Busca a tag <b> que contém o label
-                label_tag = soup.find('b', string=lambda t: t and limpar_texto(label) in limpar_texto(t))
-                if label_tag:
-                    # O valor geralmente é o próximo irmão no HTML
-                    valor = label_tag.next_sibling
-                    if valor:
-                        dados[campo] = limpar_texto(valor)
-                        break
-        
-        # Extração específica para Atividade Econômica (estrutura de tabela diferente)
-        try:
-            atividade_tag = soup.find('b', string=lambda t: t and ('Atividade Econômica Principal' in limpar_texto(t) or 'Atividade Econ&ocirc;mica Principal' in limpar_texto(t)))
-            if atividade_tag:
-                linha = atividade_tag.find_parent('tr')
-                if linha:
-                    prox_linha = linha.find_next_sibling('tr')
-                    if prox_linha:
-                        dados['Atividade Econômica Principal'] = limpar_texto(prox_linha.get_text())
-        except:
-            pass
+                tag = soup.find('b', string=lambda t: t and limpar_texto(label) in limpar_texto(t))
+                if tag and tag.next_sibling: dados[campo] = limpar_texto(tag.next_sibling)
+
+        tag_ativ = soup.find('b', string=lambda t: t and 'Atividade Econômica' in limpar_texto(t))
+        if tag_ativ and tag_ativ.find_parent('tr'):
+            prox = tag_ativ.find_parent('tr').find_next_sibling('tr')
+            if prox: dados['Atividade Econômica Principal'] = limpar_texto(prox.get_text())
 
         return dados
-
     except Exception as e:
-        logging.error(f"Erro parser HTML IE {inscricao_estadual}: {e}")
+        logging.error(f"Erro parser HTML: {e}")
         return {'Inscrição Estadual': inscricao_estadual, 'Status': f'Erro: {str(e)}'}
 
-def thread_processamento(filepath, process_id):
-    """Lógica principal executada em background."""
+def thread_processamento(filepath, process_id, is_reprocess=False):
+    """Executa scraping. Se is_reprocess=True, usa IEs do banco em vez do PDF."""
     with app.app_context():
         consulta = Consulta.query.get(process_id)
         if not consulta: return
 
-        try:
+        ies = []
+        if is_reprocess:
+            # Busca todas as IEs deste lote no banco
+            existing_results = Resultado.query.filter_by(consulta_id=process_id).all()
+            ies = [r.inscricao_estadual for r in existing_results]
+            # Limpa resultados antigos ou atualiza? Por enquanto atualizamos
+            logging.info(f"Reprocessando {len(ies)} IEs do lote {process_id}")
+        else:
             ies = extrair_ie_pdf(filepath)
-            
-            if not ies:
-                logging.info("Nenhuma IE encontrada no PDF.")
-                consulta.status = 'completed'
-                consulta.total = 0
-                consulta.end_time = datetime.now()
-                db.session.commit()
-                return
+        
+        if not ies:
+            consulta.status = 'completed'; consulta.end_time = datetime.now(); db.session.commit()
+            return
 
-            consulta.total = len(ies)
-            db.session.commit()
+        consulta.total = len(ies)
+        consulta.processed = 0
+        db.session.commit()
+        
+        driver = configurar_navegador()
+        wait = WebDriverWait(driver, 10)
 
-            driver = configurar_navegador()
-            wait = WebDriverWait(driver, 10)
-
-            for index, ie in enumerate(ies):
-                try:
-                    if consultar_ie(driver, wait, ie):
-                        dados = extrair_dados_resultado(driver, ie)
-                        
+        for index, ie in enumerate(ies):
+            try:
+                if consultar_ie(driver, wait, ie):
+                    dados = extrair_dados_resultado(driver, ie)
+                    
+                    if is_reprocess:
+                        # Atualiza registro existente
+                        res = Resultado.query.filter_by(consulta_id=process_id, inscricao_estadual=ie).first()
+                        if res:
+                            res.situacao_cadastral = dados.get('Situação Cadastral Vigente')
+                            res.motivo_situacao_cadastral = dados.get('Motivo Situação Cadastral')
+                            res.status = 'Sucesso'
+                            # Atualiza outros campos se necessário
+                    else:
+                        # Cria novo
                         resultado = Resultado(
                             consulta_id=process_id,
                             inscricao_estadual=dados.get('Inscrição Estadual'),
@@ -287,75 +250,54 @@ def thread_processamento(filepath, process_id):
                             data_situacao_cadastral=dados.get('Data Situação Cadastral'),
                             motivo_situacao_cadastral=dados.get('Motivo Situação Cadastral'),
                             nome_contador=dados.get('Nome (Contador)'),
-                            status=dados.get('Status', 'Sucesso'),
-                            campaign_status='pending'
+                            status='Sucesso', campaign_status='pending'
                         )
                         db.session.add(resultado)
-                    else:
-                        erro = Resultado(
-                            consulta_id=process_id, 
-                            inscricao_estadual=ie, 
-                            status='Erro: Navegação', 
-                            campaign_status='error'
-                        )
-                        db.session.add(erro)
-                    
-                    consulta.processed = index + 1
-                    db.session.commit()
-                    
-                    # Pausa pequena para não sobrecarregar
-                    time.sleep(1) 
-                    
-                except Exception as e:
-                    logging.error(f"Erro processando item {ie}: {e}")
-                    consulta.processed = index + 1
-                    db.session.commit()
+                else:
+                    if not is_reprocess:
+                        db.session.add(Resultado(consulta_id=process_id, inscricao_estadual=ie, status='Erro: Navegação', campaign_status='error'))
+                
+                consulta.processed = index + 1; db.session.commit()
+                time.sleep(1)
+            except Exception as e:
+                logging.error(f"Erro item {ie}: {e}")
+                consulta.processed = index + 1; db.session.commit()
 
-            driver.quit()
-            consulta.status = 'completed'
-            consulta.end_time = datetime.now()
-            db.session.commit()
-
-        except Exception as e:
-            logging.error(f"Erro fatal process_id {process_id}: {e}")
-            consulta.status = 'error'
-            consulta.end_time = datetime.now()
-            db.session.commit()
+        driver.quit()
+        consulta.status = 'completed'; consulta.end_time = datetime.now(); db.session.commit()
 
 # --- Rotas da API ---
 
 @app.route('/start-processing', methods=['POST'])
 def start_processing():
-    if 'file' not in request.files:
-        return jsonify({'error': 'Nenhum arquivo enviado'}), 400
-    
+    if 'file' not in request.files: return jsonify({'error': 'Nenhum arquivo'}), 400
     file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'Nome de arquivo vazio'}), 400
+    if file.filename == '' or not allowed_file(file.filename): return jsonify({'error': 'Arquivo inválido'}), 400
     
-    if file and allowed_file(file.filename):
-        process_id = str(uuid.uuid4())
-        filename = secure_filename(f"{process_id}.pdf")
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        
-        nova_consulta = Consulta(
-            id=process_id,
-            filename=file.filename,
-            total=0,
-            processed=0,
-            status='processing'
-        )
-        db.session.add(nova_consulta)
-        db.session.commit()
-        
-        # Inicia thread de processamento
-        t = threading.Thread(target=thread_processamento, args=(filepath, process_id))
-        t.start()
-        
-        return jsonify({'processId': process_id})
+    process_id = str(uuid.uuid4())
+    filename = secure_filename(f"{process_id}.pdf")
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(filepath)
     
-    return jsonify({'error': 'Arquivo inválido'}), 400
+    db.session.add(Consulta(id=process_id, filename=file.filename, total=0, processed=0, status='processing', start_time=datetime.now()))
+    db.session.commit()
+    
+    threading.Thread(target=thread_processamento, args=(filepath, process_id, False)).start()
+    return jsonify({'processId': process_id})
+
+@app.route('/reprocess/<process_id>', methods=['POST'])
+def reprocess(process_id):
+    consulta = Consulta.query.get(process_id)
+    if not consulta: return jsonify({'error': 'Processo não encontrado'}), 404
+    
+    consulta.status = 'processing'
+    consulta.processed = 0
+    consulta.start_time = datetime.now()
+    db.session.commit()
+    
+    # Não precisa de arquivo, usa o banco
+    threading.Thread(target=thread_processamento, args=(None, process_id, True)).start()
+    return jsonify({'success': True})
 
 @app.route('/progress/<process_id>')
 def progress(process_id):
@@ -364,62 +306,69 @@ def progress(process_id):
             last_processed = -1
             while True:
                 consulta = Consulta.query.get(process_id)
-                if not consulta:
-                    yield f"data: {json.dumps({'status': 'not_found'})}\n\n"
-                    break
-                
-                # Envia atualização apenas se mudou ou terminou
+                if not consulta: yield f"data: {json.dumps({'status': 'not_found'})}\n\n"; break
                 if consulta.processed != last_processed or consulta.status in ['completed', 'error']:
-                    data = {
-                        'total': consulta.total,
-                        'processed': consulta.processed,
-                        'status': consulta.status
-                    }
-                    yield f"data: {json.dumps(data)}\n\n"
+                    yield f"data: {json.dumps({'total': consulta.total, 'processed': consulta.processed, 'status': consulta.status})}\n\n"
                     last_processed = consulta.processed
-
-                if consulta.status in ['completed', 'error']:
-                    break
-                
+                if consulta.status in ['completed', 'error']: break
                 time.sleep(1)
-
     return Response(generate(), mimetype='text/event-stream')
 
 @app.route('/get-all-results')
 def get_all_results():
-    """Retorna TODAS as empresas cadastradas no banco."""
-    # Ordena pelos mais recentes primeiro
     resultados = Resultado.query.order_by(Resultado.id.desc()).all()
-    
-    data = []
-    for r in resultados:
-        data.append({
-            'id': str(r.id),
-            'inscricaoEstadual': r.inscricao_estadual,
-            'cnpj': r.cnpj,
-            'razaoSocial': r.razao_social,
-            'municipio': r.municipio,
-            'telefone': r.telefone,
-            'situacaoCadastral': r.situacao_cadastral,
-            'motivoSituacao': r.motivo_situacao_cadastral,
-            'nomeContador': r.nome_contador,
-            'status': r.status,
-            'campaignStatus': r.campaign_status
-        })
-    
-    return jsonify(data)
+    return jsonify([{
+        'id': str(r.id), 'inscricaoEstadual': r.inscricao_estadual, 'cnpj': r.cnpj, 'razaoSocial': r.razao_social,
+        'municipio': r.municipio, 'telefone': r.telefone, 'situacaoCadastral': r.situacao_cadastral,
+        'motivoSituacao': r.motivo_situacao_cadastral, 'nomeContador': r.nome_contador,
+        'status': r.status, 'campaignStatus': r.campaign_status
+    } for r in resultados])
+
+@app.route('/get-imports')
+def get_imports():
+    consultas = Consulta.query.order_by(Consulta.start_time.desc()).all()
+    return jsonify([{
+        'id': c.id, 'filename': c.filename, 'date': c.start_time.isoformat(),
+        'total': c.total, 'status': c.status
+    } for c in consultas])
 
 @app.route('/get-results/<process_id>')
 def get_results_by_id(process_id):
-    resultados = Resultado.query.filter_by(consulta_id=process_id).all()
-    data = []
-    for r in resultados:
-        data.append({
-            'id': str(r.id),
-            'razaoSocial': r.razao_social,
-            'status': r.status
+    # Simplificado para evitar payload gigante desnecessário
+    return jsonify({'results': []}) 
+
+# --- Endpoints para Filtros e IA ---
+
+@app.route('/api/unique-filters')
+def unique_filters():
+    # Obtém lista distinta de Motivos e Municípios
+    motivos = db.session.query(Resultado.motivo_situacao_cadastral).distinct().all()
+    municipios = db.session.query(Resultado.municipio).distinct().all()
+    
+    return jsonify({
+        'motivos': [m[0] for m in motivos if m[0]],
+        'municipios': [m[0] for m in municipios if m[0]]
+    })
+
+@app.route('/api/identify-contact/<phone>')
+def identify_contact(phone):
+    # Remove chars não numéricos
+    clean_phone = re.sub(r'\D', '', phone) 
+    # Tenta casar os ultimos 8 digitos (evita problema com 9 digito e DDI)
+    suffix = clean_phone[-8:]
+    
+    res = Resultado.query.filter(Resultado.telefone.like(f'%{suffix}')).first()
+    
+    if res:
+        return jsonify({
+            'found': True,
+            'razaoSocial': res.razao_social,
+            'municipio': res.municipio,
+            'situacao': res.situacao_cadastral,
+            'motivoSituacao': res.motivo_situacao_cadastral
         })
-    return jsonify({'results': data})
+    else:
+        return jsonify({'found': False})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
