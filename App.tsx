@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   LayoutDashboard, 
@@ -119,7 +120,7 @@ export default function App() {
   const [companies, setCompanies] = useState<CompanyResult[]>([]);
   const [knowledgeRules, setKnowledgeRules] = useLocalStorage<KnowledgeRule[]>('crm_rules', DEFAULT_KNOWLEDGE_RULES);
   const [aiConfig, setAiConfig] = useLocalStorage<AIConfig>('crm_ai_config', {
-    model: 'gemini-pro',
+    model: 'gemini-2.5-flash',
     persona: DEFAULT_AI_PERSONA,
     knowledgeRules: DEFAULT_KNOWLEDGE_RULES,
     temperature: 0.7,
@@ -166,11 +167,11 @@ export default function App() {
           qrCode: data.qr
         });
 
-        // Se estiver conectado e na aba de Chat, atualiza a lista de conversas
         if (data.status === 'connected' && activeTab === 'chat') {
             const chatRes = await fetch('/api/whatsapp/chats');
             const chatData = await chatRes.json();
-            setChats(chatData);
+            // Apenas atualiza se houve mudança para evitar re-render desnecessário
+            setChats(prev => JSON.stringify(prev) !== JSON.stringify(chatData) ? chatData : prev);
         }
       } catch (e) {
         console.error("Erro ao buscar status/chats do WhatsApp", e);
@@ -179,7 +180,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [activeTab]);
 
-  // Poll Active Chat Messages
+  // Poll Active Chat Messages (Fix Scroll Issue)
   useEffect(() => {
     if (!activeChat || activeTab !== 'chat') return;
 
@@ -187,21 +188,33 @@ export default function App() {
         try {
             const res = await fetch(`/api/whatsapp/messages/${activeChat}`);
             const data = await res.json();
-            setMessages(data);
+            
+            setMessages(prev => {
+                // Só atualiza se o array for diferente
+                if (JSON.stringify(prev) !== JSON.stringify(data)) {
+                    return data;
+                }
+                return prev;
+            });
         } catch (e) {
             console.error("Erro ao buscar mensagens", e);
         }
     };
 
-    fetchMessages(); // Initial fetch
-    const interval = setInterval(fetchMessages, 2000); // Poll every 2s
+    fetchMessages(); 
+    const interval = setInterval(fetchMessages, 2000);
     return () => clearInterval(interval);
   }, [activeChat, activeTab]);
 
-  // Scroll to bottom of chat
+  // Scroll to bottom ONLY when messages length increases (new message arrives)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    if (messages.length > 0) {
+        // Verifica se a última mensagem é nova
+        const lastMessage = messages[messages.length - 1];
+        // Pequena otimização: rola só se for nova
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages.length, activeChat]); 
 
   const fetchCompanies = async () => {
     try {
@@ -233,11 +246,10 @@ export default function App() {
         if (data.status === 'completed' || data.status === 'error') {
           setIsProcessing(false);
           eventSource.close();
-          // Fetch results specifically for this process and append/merge
           fetch(`/get-results/${currentProcessId}`)
             .then(r => r.json())
             .then(resData => {
-                 fetchCompanies(); // Refresh full list
+                 fetchCompanies();
                  alert("Importação concluída com sucesso!");
                  setActiveTab('empresas');
             });
@@ -308,7 +320,6 @@ export default function App() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ chatId, active: !currentStatus }) // Inverte o status
           });
-          // Atualiza lista localmente para feedback instantâneo
           setChats(prev => prev.map(c => c.id === chatId ? { ...c, isAiDisabled: currentStatus } : c));
       } catch (e) {
           console.error("Erro ao alternar IA do chat", e);
@@ -324,7 +335,6 @@ export default function App() {
               body: JSON.stringify({ chatId: activeChat, message: messageInput })
           });
           setMessageInput('');
-          // Mensagem aparecerá no próximo poll
       } catch (e) {
           console.error("Erro ao enviar mensagem", e);
       }
@@ -453,125 +463,6 @@ export default function App() {
       </div>
     </div>
   );
-
-  const ChatView = () => {
-      const activeChatData = chats.find(c => c.id === activeChat);
-
-      return (
-          <div className="flex h-full bg-white rounded-2xl overflow-hidden shadow-lg border border-slate-200">
-              {/* Sidebar List */}
-              <div className="w-80 bg-slate-50 border-r border-slate-200 flex flex-col">
-                  <div className="p-4 border-b border-slate-200 bg-slate-100">
-                      <div className="relative">
-                          <input 
-                              type="text" 
-                              placeholder="Buscar conversa..." 
-                              className="w-full pl-9 pr-4 py-2 bg-white border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
-                          />
-                          <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
-                      </div>
-                  </div>
-                  <div className="flex-1 overflow-y-auto custom-scrollbar">
-                      {chats.map(chat => (
-                          <div 
-                              key={chat.id} 
-                              onClick={() => setActiveChat(chat.id)}
-                              className={`p-3 border-b border-slate-100 cursor-pointer hover:bg-slate-100 transition-colors flex items-center gap-3 ${activeChat === chat.id ? 'bg-emerald-50' : ''}`}
-                          >
-                              <div className="w-10 h-10 rounded-full bg-slate-300 flex items-center justify-center shrink-0">
-                                  <User className="text-white" size={20} />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                  <div className="flex justify-between items-baseline">
-                                      <h4 className="text-sm font-semibold text-slate-800 truncate">{chat.name}</h4>
-                                      <span className="text-xs text-slate-400">
-                                          {new Date(chat.timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                                      </span>
-                                  </div>
-                                  <p className="text-xs text-slate-500 truncate">{chat.lastMessage}</p>
-                              </div>
-                              {chat.isAiDisabled && (
-                                  <Bot size={14} className="text-rose-400" title="IA Desativada para este chat" />
-                              )}
-                          </div>
-                      ))}
-                  </div>
-              </div>
-
-              {/* Chat Area */}
-              <div className="flex-1 flex flex-col bg-[#efeae2]">
-                  {activeChat ? (
-                      <>
-                          {/* Chat Header */}
-                          <div className="bg-slate-100 p-3 border-b border-slate-200 flex justify-between items-center shadow-sm z-10">
-                              <div className="flex items-center gap-3">
-                                  <div className="w-10 h-10 rounded-full bg-slate-300 flex items-center justify-center">
-                                      <User className="text-white" size={20} />
-                                  </div>
-                                  <div>
-                                      <h3 className="font-semibold text-slate-800">{activeChatData?.name}</h3>
-                                      <p className="text-xs text-slate-500">Online</p>
-                                  </div>
-                              </div>
-                              <div className="flex items-center gap-4">
-                                  <div className="flex items-center gap-2">
-                                      <span className="text-xs font-medium text-slate-600">IA neste chat:</span>
-                                      <button 
-                                          onClick={() => toggleChatAi(activeChat, !!activeChatData?.isAiDisabled)}
-                                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${!activeChatData?.isAiDisabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                                      >
-                                          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition duration-200 ease-in-out ${!activeChatData?.isAiDisabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                                      </button>
-                                  </div>
-                                  <MoreVertical className="text-slate-500 cursor-pointer" />
-                              </div>
-                          </div>
-
-                          {/* Messages */}
-                          <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar bg-opacity-50" style={{ backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")' }}>
-                              {messages.map(msg => (
-                                  <div key={msg.id} className={`flex ${msg.fromMe ? 'justify-end' : 'justify-start'}`}>
-                                      <div className={`max-w-[70%] p-3 rounded-lg shadow-sm text-sm relative ${msg.fromMe ? 'bg-[#d9fdd3] text-slate-800 rounded-tr-none' : 'bg-white text-slate-800 rounded-tl-none'}`}>
-                                          <p>{msg.body}</p>
-                                          <span className="text-[10px] text-slate-400 block text-right mt-1">
-                                              {new Date(msg.timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                                          </span>
-                                      </div>
-                                  </div>
-                              ))}
-                              <div ref={messagesEndRef} />
-                          </div>
-
-                          {/* Input Area */}
-                          <div className="bg-slate-100 p-3 flex items-center gap-3">
-                              <Smile className="text-slate-500 cursor-pointer" />
-                              <Paperclip className="text-slate-500 cursor-pointer" />
-                              <input 
-                                  type="text" 
-                                  className="flex-1 p-2 rounded-lg border border-slate-300 focus:outline-none focus:border-emerald-500"
-                                  placeholder="Digite uma mensagem..."
-                                  value={messageInput}
-                                  onChange={(e) => setMessageInput(e.target.value)}
-                                  onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                              />
-                              <button onClick={sendMessage} className="p-2 bg-emerald-500 text-white rounded-full hover:bg-emerald-600 transition-colors">
-                                  <Send size={20} />
-                              </button>
-                          </div>
-                      </>
-                  ) : (
-                      <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
-                          <div className="w-24 h-24 bg-slate-200 rounded-full flex items-center justify-center mb-4">
-                              <MessageCircle size={40} className="text-slate-400" />
-                          </div>
-                          <h3 className="text-lg font-semibold text-slate-600">WhatsApp Conectado</h3>
-                          <p>Selecione uma conversa para começar.</p>
-                      </div>
-                  )}
-              </div>
-          </div>
-      );
-  };
 
   const ImportView = () => (
     <div className="max-w-4xl mx-auto animate-slide-up">
@@ -1113,6 +1004,125 @@ export default function App() {
         </div>
       </div>
     );
+  };
+
+  const ChatView = () => {
+      const activeChatData = chats.find(c => c.id === activeChat);
+
+      return (
+          <div className="flex h-full bg-white rounded-2xl overflow-hidden shadow-lg border border-slate-200">
+              {/* Sidebar List */}
+              <div className="w-80 bg-slate-50 border-r border-slate-200 flex flex-col">
+                  <div className="p-4 border-b border-slate-200 bg-slate-100">
+                      <div className="relative">
+                          <input 
+                              type="text" 
+                              placeholder="Buscar conversa..." 
+                              className="w-full pl-9 pr-4 py-2 bg-white border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                          />
+                          <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
+                      </div>
+                  </div>
+                  <div className="flex-1 overflow-y-auto custom-scrollbar">
+                      {chats.map(chat => (
+                          <div 
+                              key={chat.id} 
+                              onClick={() => setActiveChat(chat.id)}
+                              className={`p-3 border-b border-slate-100 cursor-pointer hover:bg-slate-100 transition-colors flex items-center gap-3 ${activeChat === chat.id ? 'bg-emerald-50' : ''}`}
+                          >
+                              <div className="w-10 h-10 rounded-full bg-slate-300 flex items-center justify-center shrink-0">
+                                  <User className="text-white" size={20} />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                  <div className="flex justify-between items-baseline">
+                                      <h4 className="text-sm font-semibold text-slate-800 truncate">{chat.name}</h4>
+                                      <span className="text-xs text-slate-400">
+                                          {new Date(chat.timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                      </span>
+                                  </div>
+                                  <p className="text-xs text-slate-500 truncate">{chat.lastMessage}</p>
+                              </div>
+                              {chat.isAiDisabled && (
+                                  <Bot size={14} className="text-rose-400" title="IA Desativada para este chat" />
+                              )}
+                          </div>
+                      ))}
+                  </div>
+              </div>
+
+              {/* Chat Area */}
+              <div className="flex-1 flex flex-col bg-[#efeae2]">
+                  {activeChat ? (
+                      <>
+                          {/* Chat Header */}
+                          <div className="bg-slate-100 p-3 border-b border-slate-200 flex justify-between items-center shadow-sm z-10">
+                              <div className="flex items-center gap-3">
+                                  <div className="w-10 h-10 rounded-full bg-slate-300 flex items-center justify-center">
+                                      <User className="text-white" size={20} />
+                                  </div>
+                                  <div>
+                                      <h3 className="font-semibold text-slate-800">{activeChatData?.name}</h3>
+                                      <p className="text-xs text-slate-500">Online</p>
+                                  </div>
+                              </div>
+                              <div className="flex items-center gap-4">
+                                  <div className="flex items-center gap-2">
+                                      <span className="text-xs font-medium text-slate-600">IA neste chat:</span>
+                                      <button 
+                                          onClick={() => toggleChatAi(activeChat, !!activeChatData?.isAiDisabled)}
+                                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${!activeChatData?.isAiDisabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                                      >
+                                          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition duration-200 ease-in-out ${!activeChatData?.isAiDisabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                                      </button>
+                                  </div>
+                                  <MoreVertical className="text-slate-500 cursor-pointer" />
+                              </div>
+                          </div>
+
+                          {/* Messages */}
+                          <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar bg-opacity-50" style={{ backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")' }}>
+                              {messages.map(msg => (
+                                  <div key={msg.id} className={`flex ${msg.fromMe ? 'justify-end' : 'justify-start'}`}>
+                                      <div className={`max-w-[70%] p-3 rounded-lg shadow-sm text-sm relative ${msg.fromMe ? 'bg-[#d9fdd3] text-slate-800 rounded-tr-none' : 'bg-white text-slate-800 rounded-tl-none'}`}>
+                                          <p>{msg.body}</p>
+                                          <span className="text-[10px] text-slate-400 block text-right mt-1">
+                                              {new Date(msg.timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                                          </span>
+                                      </div>
+                                  </div>
+                              ))}
+                              <div ref={messagesEndRef} />
+                          </div>
+
+                          {/* Input Area */}
+                          <div className="bg-slate-100 p-3 flex items-center gap-3">
+                              <Smile className="text-slate-500 cursor-pointer" />
+                              <Paperclip className="text-slate-500 cursor-pointer" />
+                              <input 
+                                  type="text" 
+                                  className="flex-1 p-2 rounded-lg border border-slate-300 focus:outline-none focus:border-emerald-500"
+                                  placeholder="Digite uma mensagem..."
+                                  value={messageInput}
+                                  onChange={(e) => setMessageInput(e.target.value)}
+                                  onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                              />
+                              <button onClick={sendMessage} className="p-2 bg-emerald-500 text-white rounded-full hover:bg-emerald-600 transition-colors">
+                                  <Send size={20} />
+                              </button>
+                          </div>
+                      </>
+                  ) : (
+                      <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
+                          <div className="w-24 h-24 bg-slate-200 rounded-full flex items-center justify-center mb-4">
+                              <MessageCircle size={40} className="text-slate-400" />
+                          </div>
+                          <h3 className="text-lg font-semibold text-slate-600">WhatsApp Conectado</h3>
+                          <p>Selecione uma conversa para começar.</p>
+                      </div>
+                  )}
+              </div>
+          </div>
+      );
   };
 
   // --- Render ---
