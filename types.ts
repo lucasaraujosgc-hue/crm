@@ -19,19 +19,20 @@ export enum CampaignStatus {
 
 export interface CompanyResult {
   id: string;
+  consultaId?: string; // Link to the import batch
   inscricaoEstadual: string;
   cnpj: string;
   razaoSocial: string;
   municipio: string;
   telefone: string | null;
   situacaoCadastral: string;
-  motivoSituacao: string; // This is the KEY key for the Knowledge Base
+  motivoSituacao: string;
   nomeContador: string | null;
   status: Status;
   
   // Campaign Fields
   campaignStatus: CampaignStatus;
-  lastContacted?: string; // ISO Date
+  lastContacted?: string;
   lastMessageSent?: string;
   aiAnalysis?: string;
 }
@@ -43,12 +44,17 @@ export interface ProcessingStats {
   errors: number;
 }
 
+export interface Instruction {
+  id: string;
+  title: string;      // Ex: "Argumento de Preço", "Passo a Passo"
+  type: 'simple' | 'flow';
+  content: string;    // O texto para a IA
+}
+
 export interface KnowledgeRule {
   id: string;
-  motivoSituacao: string; // Links directly to the scraped data
-  diagnosis: string;      // "O que é isso?" (Context for AI)
-  solution: string;       // "O que precisa ser feito?" (Technical solution)
-  salesPitch: string;     // "Como vender isso?" (Persuasion)
+  motivoSituacao: string; // The Trigger
+  instructions: Instruction[];
   isActive: boolean;
 }
 
@@ -57,12 +63,20 @@ export interface AIConfig {
   persona: string;
   knowledgeRules: KnowledgeRule[];
   temperature: number;
-  aiActive: boolean; // Master switch for AI on WhatsApp
+  aiActive: boolean;
 }
 
 export interface WhatsAppSession {
   status: 'connected' | 'disconnected' | 'qr_ready' | 'connecting';
-  qrCode?: string; // Base64 string
+  qrCode?: string;
   userName?: string;
   phoneNumber?: string;
+}
+
+export interface ImportBatch {
+  id: string;
+  filename: string;
+  date: string;
+  total: number;
+  status: string;
 }
