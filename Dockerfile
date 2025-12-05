@@ -67,15 +67,19 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalar Chromedriver manual para evitar erro do webdriver-manager
-RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | awk -F'.' '{print $1}') && \
-    wget -q "https://storage.googleapis.com/chrome-for-testing-public/131.0.6778.85/linux64/chromedriver-linux64.zip" -O chromedriver.zip && \
-    unzip chromedriver.zip && \
-    mv chromedriver-linux64/chromedriver /usr/bin/chromedriver && \
-    chmod +x /usr/bin/chromedriver && \
-    rm -rf chromedriver.zip chromedriver-linux64
-
 WORKDIR /app
+
+# --- INSTALAÇÃO DINÂMICA DO CHROMEDRIVER ---
+# Usa Python para pegar a URL exata do driver estável da API do Google
+RUN python3 -c "import json, urllib.request; \
+    data = json.loads(urllib.request.urlopen('https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json').read()); \
+    print(data['channels']['Stable']['downloads']['chromedriver'][0]['url'])" > driver_url.txt && \
+    wget -q -i driver_url.txt -O chromedriver.zip && \
+    unzip chromedriver.zip && \
+    # A pasta descompactada pode variar, então usamos find para mover o binário
+    find . -name "chromedriver" -type f -exec mv {} /usr/bin/chromedriver \; && \
+    chmod +x /usr/bin/chromedriver && \
+    rm -rf chromedriver.zip driver_url.txt
 
 # Copy built React assets
 COPY --from=builder /app/dist ./dist
@@ -86,7 +90,7 @@ RUN npm install --production
 
 # Install Python requirements
 COPY requirements.txt .
-# Create a virtual env to avoid breaking system python
+# Create a virtual env
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir -r requirements.txt
@@ -97,7 +101,7 @@ COPY server.js .
 COPY app.py .
 COPY start.sh .
 
-# Fix line endings
+# Fix line endings & permissions
 RUN dos2unix start.sh && \
     chmod +x start.sh
 
@@ -107,11 +111,10 @@ RUN mkdir -p sefaz_uploads
 # Define env variables
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
-# Variável para o Python achar o driver
-ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver 
+ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
-# Expose the main port (Node.js)
+# Expose port
 EXPOSE 3000
 
-# Start both services
+# Start
 CMD ["/bin/sh", "start.sh"]
