@@ -7,7 +7,8 @@ import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth } = pkg;
 import QRCode from 'qrcode';
 import fs from 'fs';
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
+import fetch from 'node-fetch'; // Adicionado para Node < 18, mas native fetch existe no 18+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,24 +17,27 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
-// --- IA Logic (Gemini) ---
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-let genAI = null;
-let model = null;
+// --- IA Logic & Config ---
+const API_KEY = process.env.API_KEY || process.env.GOOGLE_API_KEY;
+let activeRules = []; // Regras em memória, enviadas pelo frontend
 
-if (GOOGLE_API_KEY) {
-    console.log('[AI] Configurando Google Gemini...');
-    genAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
-    // Alterado para gemini-1.5-flash para evitar erro 404
-    model = genAI.getGenerativeModel({ model: "gemini-1.5-flash"});
+if (API_KEY) {
+    console.log('[AI] Google Gemini configurado.');
 } else {
-    console.warn('[AI] AVISO: GOOGLE_API_KEY não encontrada. O bot não responderá com IA.');
+    console.warn('[AI] AVISO: API_KEY não encontrada.');
 }
 
-// Store para saber quem está com IA desativada (em memória)
 const disabledAI = new Set();
+
+// Endpoint para atualizar regras vindas do frontend
+app.post('/api/config/ai-rules', (req, res) => {
+    const { rules } = req.body;
+    activeRules = rules || [];
+    console.log(`[AI] ${activeRules.length} regras de conhecimento atualizadas.`);
+    res.json({ success: true });
+});
 
 // --- WhatsApp Logic ---
 let qrCodeData = null;
@@ -43,7 +47,6 @@ if (!fs.existsSync('./whatsapp_auth')) {
     fs.mkdirSync('./whatsapp_auth');
 }
 
-// Configuração ROBUSTA do Puppeteer para Docker
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: './whatsapp_auth' }),
     puppeteer: {
@@ -65,67 +68,109 @@ client.on('qr', async (qr) => {
     try {
         qrCodeData = await QRCode.toDataURL(qr);
         whatsappStatus = 'qr_ready';
-    } catch (err) {
-        console.error('[WhatsApp] Erro ao gerar imagem QR', err);
-    }
+    } catch (err) { console.error(err); }
 });
 
 client.on('ready', () => {
-    console.log('[WhatsApp] Conectado com Sucesso!');
+    console.log('[WhatsApp] Conectado!');
     whatsappStatus = 'connected';
     qrCodeData = null;
 });
 
-client.on('disconnected', (reason) => {
-    console.log('[WhatsApp] Desconectado:', reason);
+client.on('disconnected', () => {
     whatsappStatus = 'disconnected';
     qrCodeData = null;
     setTimeout(initializeWhatsApp, 5000);
 });
 
-// Lógica de Mensagem com IA
+// Lógica de Mensagem com Contexto
 client.on('message', async msg => {
-    if (!model) return; 
+    if (!API_KEY) return; 
     if (msg.fromMe) return;
 
     const chat = await msg.getChat();
-    
+    const contact = await msg.getContact();
+    const phoneNumber = contact.number; // ex: 557199998888
+
     if (disabledAI.has(chat.id._serialized)) {
-        console.log(`[AI] Ignorando chat ${chat.name} (IA desativada)`);
         return;
     }
 
-    // Delay natural
-    await new Promise(r => setTimeout(r, 3000 + Math.random() * 2000));
+    await new Promise(r => setTimeout(r, 4000 + Math.random() * 2000));
     await chat.sendStateTyping();
 
     try {
-        const prompt = `Você é um assistente comercial da CRM VIRGULA.
-        O cliente disse: "${msg.body}".
-        Responda de forma curta, prestativa e profissional.`;
+        // 1. Identificar Empresa no Python
+        let contextData = null;
+        try {
+            // Chamada interna para o Python (localhost:5000)
+            const checkRes = await fetch(`http://127.0.0.1:5000/api/identify-contact/${phoneNumber}`);
+            if (checkRes.ok) {
+                const data = await checkRes.json();
+                if (data.found) contextData = data;
+            }
+        } catch (err) {
+            console.error('[AI] Falha ao identificar contato:', err.message);
+        }
 
-        const result = await model.generateContent(prompt);
-        const response = result.response.text();
+        // 2. Construir Prompt com Base nas Regras
+        let systemInstruction = `Você é um assistente comercial da CRM VIRGULA, especializado em regularização fiscal na Bahia.
+        Seu tom deve ser profissional, empático e focado em resolver o problema do cliente.
+        Use linguagem clara, evite juridiquês excessivo.`;
 
-        await chat.sendMessage(response);
+        if (contextData) {
+            systemInstruction += `\n\nDADOS DO CLIENTE:
+            Razão Social: ${contextData.razaoSocial}
+            Município: ${contextData.municipio}
+            Situação: ${contextData.situacao}
+            Motivo da Inaptidão: "${contextData.motivoSituacao}"`;
+
+            // Buscar regra específica
+            const matchingRule = activeRules.find(r => 
+                contextData.motivoSituacao && r.motivoSituacao && 
+                contextData.motivoSituacao.includes(r.motivoSituacao)
+            );
+
+            if (matchingRule) {
+                systemInstruction += `\n\nINSTRUÇÕES ESPECÍFICAS PARA ESTE CASO:`;
+                matchingRule.instructions.forEach(inst => {
+                    systemInstruction += `\n- [${inst.title}]: ${inst.content}`;
+                });
+            } else {
+                systemInstruction += `\n\n(Não há instruções específicas cadastradas para este motivo exato, use seu conhecimento geral sobre ICMS/SEFAZ BA).`;
+            }
+        } else {
+            systemInstruction += `\n\n(Cliente não identificado na base de dados. Trate como um lead novo interessado em regularização).`;
+        }
+
+        systemInstruction += `\n\nHISTÓRICO: O cliente disse: "${msg.body}"`;
+
+        // 3. Gerar Resposta
+        const ai = new GoogleGenAI({ apiKey: API_KEY });
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: systemInstruction // Passando como contents para simplificar no SDK novo
+        });
+
+        await chat.sendMessage(response.text);
+
     } catch (e) {
-        console.error('[AI] Erro ao gerar resposta:', e);
+        console.error('[AI] Erro:', e);
     }
 });
 
 async function initializeWhatsApp() {
     try {
-        console.log('[WhatsApp] Inicializando cliente...');
         await client.initialize();
     } catch (e) {
-        console.error("[WhatsApp] Erro fatal ao iniciar:", e.message);
+        console.error("[WhatsApp] Erro:", e.message);
         setTimeout(initializeWhatsApp, 10000);
     }
 }
 
 initializeWhatsApp();
 
-// --- Endpoints para a Interface de Chat ---
+// --- Endpoints ---
 
 app.get('/api/whatsapp/chats', async (req, res) => {
     if (whatsappStatus !== 'connected') return res.json([]);
@@ -178,23 +223,26 @@ app.get('/api/whatsapp/status', (req, res) => {
     res.json({ status: whatsappStatus, qr: qrCodeData });
 });
 
-// --- Proxy Python ---
+// Proxy setup
 const pythonProxy = createProxyMiddleware({
     target: 'http://127.0.0.1:5000',
     changeOrigin: true,
     ws: true, 
     logLevel: 'error', 
     onError: (err, req, res) => {
-        if (!res.headersSent) {
-            res.status(502).json({ error: 'Backend Python indisponível.' });
-        }
+        if (!res.headersSent) res.status(502).json({ error: 'Backend Python indisponível.' });
     }
 });
 
+// Proxy all API routes
 app.use('/start-processing', pythonProxy);
+app.use('/reprocess', pythonProxy);
 app.use('/progress', pythonProxy);
 app.use('/get-all-results', pythonProxy);
 app.use('/get-results', pythonProxy);
+app.use('/get-imports', pythonProxy);
+app.use('/api/unique-filters', pythonProxy); 
+// Note: api/identify-contact is internal only usually, but proxied for testing
 
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => {
@@ -202,5 +250,6 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Node] Servidor Principal rodando na porta ${PORT}`);
+  console.log(`[Node] Rodando na porta ${PORT}`);
 });
+
