@@ -90,6 +90,12 @@ class Resultado(db.Model):
     last_contacted = db.Column(db.DateTime, nullable=True)
     notes = db.Column(db.Text, nullable=True)
 
+# --- CRIAÇÃO DAS TABELAS (CRÍTICO PARA GUNICORN) ---
+# Executa a criação das tabelas no contexto global para garantir
+# que elas existam quando o Gunicorn iniciar o worker.
+with app.app_context():
+    db.create_all()
+
 # --- Funções Auxiliares ---
 
 def allowed_file(filename):
@@ -390,6 +396,5 @@ def get_results_by_id(process_id):
     return jsonify({'results': data})
 
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
+    # Mantemos aqui também para rodar localmente (python app.py)
     app.run(host='0.0.0.0', port=5000)
