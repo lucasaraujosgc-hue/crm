@@ -84,12 +84,12 @@ class Resultado(db.Model):
     nome_contador = db.Column(db.String(100))
     status = db.Column(db.String(20)) # Sucesso, Erro
 
-    # Campos do CRM (Novos)
+    # Campos do CRM
     campaign_status = db.Column(db.String(50), default='pending') # pending, sent, replied
     last_contacted = db.Column(db.DateTime, nullable=True)
     notes = db.Column(db.Text, nullable=True)
 
-# --- CRIAÇÃO DAS TABELAS ---
+# --- Criação das Tabelas ---
 with app.app_context():
     db.create_all()
 
@@ -102,7 +102,7 @@ def configurar_navegador():
     """Configura o Chrome para rodar no Docker (Headless)."""
     try:
         options = Options()
-        # Configurações críticas para Docker
+        # Configurações críticas para Docker/Linux
         options.add_argument('--headless=new') 
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
@@ -110,11 +110,16 @@ def configurar_navegador():
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--disable-extensions')
         
-        # Correção: Usar o driver instalado no sistema pelo Dockerfile
-        # Em vez de tentar baixar com webdriver_manager (que falhava)
+        # IMPORTANTE: Usa o caminho definido no Dockerfile ou o padrão do sistema
+        # Isso corrige o "Exec format error" pois não baixa binário errado
         chromedriver_path = os.environ.get('CHROMEDRIVER_PATH', '/usr/bin/chromedriver')
         
-        service = Service(executable_path=chromedriver_path)
+        if os.path.exists(chromedriver_path):
+            service = Service(executable_path=chromedriver_path)
+        else:
+            # Fallback se não achar a variável, tenta achar no path
+            service = Service()
+
         driver = webdriver.Chrome(service=service, options=options)
         return driver
     except Exception as e:
@@ -125,6 +130,7 @@ def extrair_ie_pdf(filepath):
     """Lê o PDF e extrai números que parecem Inscrição Estadual."""
     ies = []
     try:
+        logging.info(f"Lendo PDF: {filepath}")
         padrao = re.compile(r'(\d{1,3}\.\d{1,3}\.\d{1,3})\s*-')
         doc = fitz.open(filepath)
         for page in doc:
@@ -135,15 +141,37 @@ def extrair_ie_pdf(filepath):
                 if len(ie_limpa) == 9:
                     ies.append(ie_limpa)
         doc.close()
-        return list(set(ies))
+        unique_ies = list(set(ies))
+        logging.info(f"Encontradas {len(unique_ies)} IEs únicas")
+        return unique_ies
     except Exception as e:
         logging.error(f"Erro ao ler PDF: {e}")
         return []
 
+def consultar_ie(driver, wait, ie):
+    """Navega no site da SEFAZ."""
+    try:
+        driver.get('https://portal.sefaz.ba.gov.br/scripts/cadastro/cadastroBa/consultaBa.asp')
+        
+        campo_ie = wait.until(EC.presence_of_element_located((By.NAME, 'IE')))
+        campo_ie.clear()
+        campo_ie.send_keys(ie)
+        
+        botao = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='submit' and @name='B2' and contains(@value, 'IE')]")))
+        botao.click()
+        
+        # Espera carregar a página de resultado
+        wait.until(EC.url_contains('result.asp'))
+        return True
+    except Exception as e:
+        logging.warning(f"Falha na navegação IE {ie}: {e}")
+        return False
+
 def extrair_dados_resultado(driver, inscricao_estadual):
     """Faz o parser do HTML da SEFAZ."""
     try:
-        WebDriverWait(driver, 10).until(
+        # Garante que a tabela carregou
+        WebDriverWait(driver, 5).until(
             EC.presence_of_element_located((By.XPATH, "//td[contains(., 'Consulta Básica ao Cadastro do ICMS da Bahia')]"))
         )
         
@@ -160,7 +188,7 @@ def extrair_dados_resultado(driver, inscricao_estadual):
             if not texto: return None
             return unescape(str(texto)).replace('\xa0', ' ').strip()
 
-        # Mapeamento de campos
+        # Mapeamento de campos (Chave no BD : Texto na Tela)
         campos_map = {
             'CNPJ': ['CNPJ:'],
             'Razão Social': ['Razão Social:', 'Raz&atilde;o Social:'],
@@ -183,14 +211,16 @@ def extrair_dados_resultado(driver, inscricao_estadual):
 
         for campo, labels in campos_map.items():
             for label in labels:
+                # Busca a tag <b> que contém o label
                 label_tag = soup.find('b', string=lambda t: t and limpar_texto(label) in limpar_texto(t))
                 if label_tag:
+                    # O valor geralmente é o próximo irmão no HTML
                     valor = label_tag.next_sibling
                     if valor:
                         dados[campo] = limpar_texto(valor)
                         break
         
-        # Extração específica para Atividade Econômica
+        # Extração específica para Atividade Econômica (estrutura de tabela diferente)
         try:
             atividade_tag = soup.find('b', string=lambda t: t and ('Atividade Econômica Principal' in limpar_texto(t) or 'Atividade Econ&ocirc;mica Principal' in limpar_texto(t)))
             if atividade_tag:
@@ -205,22 +235,8 @@ def extrair_dados_resultado(driver, inscricao_estadual):
         return dados
 
     except Exception as e:
-        logging.error(f"Erro parser IE {inscricao_estadual}: {e}")
+        logging.error(f"Erro parser HTML IE {inscricao_estadual}: {e}")
         return {'Inscrição Estadual': inscricao_estadual, 'Status': f'Erro: {str(e)}'}
-
-def consultar_ie(driver, wait, ie):
-    """Navega no site da SEFAZ."""
-    try:
-        driver.get('https://portal.sefaz.ba.gov.br/scripts/cadastro/cadastroBa/consultaBa.asp')
-        campo_ie = wait.until(EC.presence_of_element_located((By.NAME, 'IE')))
-        campo_ie.clear()
-        campo_ie.send_keys(ie)
-        botao = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='submit' and @name='B2' and contains(@value, 'IE')]")))
-        botao.click()
-        wait.until(EC.url_contains('result.asp'))
-        return True
-    except:
-        return False
 
 def thread_processamento(filepath, process_id):
     """Lógica principal executada em background."""
@@ -232,7 +248,8 @@ def thread_processamento(filepath, process_id):
             ies = extrair_ie_pdf(filepath)
             
             if not ies:
-                consulta.status = 'completed' # PDF válido mas sem IEs
+                logging.info("Nenhuma IE encontrada no PDF.")
+                consulta.status = 'completed'
                 consulta.total = 0
                 consulta.end_time = datetime.now()
                 db.session.commit()
@@ -242,7 +259,7 @@ def thread_processamento(filepath, process_id):
             db.session.commit()
 
             driver = configurar_navegador()
-            wait = WebDriverWait(driver, 15)
+            wait = WebDriverWait(driver, 10)
 
             for index, ie in enumerate(ies):
                 try:
@@ -270,19 +287,27 @@ def thread_processamento(filepath, process_id):
                             data_situacao_cadastral=dados.get('Data Situação Cadastral'),
                             motivo_situacao_cadastral=dados.get('Motivo Situação Cadastral'),
                             nome_contador=dados.get('Nome (Contador)'),
-                            status=dados.get('Status'),
+                            status=dados.get('Status', 'Sucesso'),
                             campaign_status='pending'
                         )
                         db.session.add(resultado)
                     else:
-                        erro = Resultado(consulta_id=process_id, inscricao_estadual=ie, status='Erro: Navegação', campaign_status='error')
+                        erro = Resultado(
+                            consulta_id=process_id, 
+                            inscricao_estadual=ie, 
+                            status='Erro: Navegação', 
+                            campaign_status='error'
+                        )
                         db.session.add(erro)
                     
                     consulta.processed = index + 1
                     db.session.commit()
                     
+                    # Pausa pequena para não sobrecarregar
+                    time.sleep(1) 
+                    
                 except Exception as e:
-                    logging.error(f"Erro item {ie}: {e}")
+                    logging.error(f"Erro processando item {ie}: {e}")
                     consulta.processed = index + 1
                     db.session.commit()
 
@@ -324,7 +349,7 @@ def start_processing():
         db.session.add(nova_consulta)
         db.session.commit()
         
-        # Inicia thread
+        # Inicia thread de processamento
         t = threading.Thread(target=thread_processamento, args=(filepath, process_id))
         t.start()
         
@@ -363,7 +388,8 @@ def progress(process_id):
 @app.route('/get-all-results')
 def get_all_results():
     """Retorna TODAS as empresas cadastradas no banco."""
-    resultados = Resultado.query.all()
+    # Ordena pelos mais recentes primeiro
+    resultados = Resultado.query.order_by(Resultado.id.desc()).all()
     
     data = []
     for r in resultados:
