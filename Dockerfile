@@ -67,6 +67,14 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Instalar Chromedriver manual para evitar erro do webdriver-manager
+RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | awk -F'.' '{print $1}') && \
+    wget -q "https://storage.googleapis.com/chrome-for-testing-public/131.0.6778.85/linux64/chromedriver-linux64.zip" -O chromedriver.zip && \
+    unzip chromedriver.zip && \
+    mv chromedriver-linux64/chromedriver /usr/bin/chromedriver && \
+    chmod +x /usr/bin/chromedriver && \
+    rm -rf chromedriver.zip chromedriver-linux64
+
 WORKDIR /app
 
 # Copy built React assets
@@ -89,21 +97,21 @@ COPY server.js .
 COPY app.py .
 COPY start.sh .
 
-# --- CORREÇÃO DO ERRO 'NOT FOUND' ---
-# 1. Converte quebras de linha do Windows para Linux
-# 2. Dá permissão de execução
+# Fix line endings
 RUN dos2unix start.sh && \
     chmod +x start.sh
 
 # Create uploads directory
 RUN mkdir -p sefaz_uploads
 
-# Define env var for Puppeteer to find Chrome
+# Define env variables
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
+# Variável para o Python achar o driver
+ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver 
 
 # Expose the main port (Node.js)
 EXPOSE 3000
 
-# Start both services using sh explicitamente
+# Start both services
 CMD ["/bin/sh", "start.sh"]
