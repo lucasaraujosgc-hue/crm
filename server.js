@@ -26,13 +26,14 @@ let model = null;
 if (GOOGLE_API_KEY) {
     console.log('[AI] Configurando Google Gemini...');
     genAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
-    model = genAI.getGenerativeModel({ model: "gemini-pro"});
+    // Alterado para gemini-1.5-flash para evitar erro 404
+    model = genAI.getGenerativeModel({ model: "gemini-1.5-flash"});
 } else {
     console.warn('[AI] AVISO: GOOGLE_API_KEY não encontrada. O bot não responderá com IA.');
 }
 
-// Store para saber quem está com IA desativada (em memória para simplificar, idealmente seria DB)
-const disabledAI = new Set(); // Guarda IDs de chats (ex: 557199998888@c.us)
+// Store para saber quem está com IA desativada (em memória)
+const disabledAI = new Set();
 
 // --- WhatsApp Logic ---
 let qrCodeData = null;
@@ -42,6 +43,7 @@ if (!fs.existsSync('./whatsapp_auth')) {
     fs.mkdirSync('./whatsapp_auth');
 }
 
+// Configuração ROBUSTA do Puppeteer para Docker
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: './whatsapp_auth' }),
     puppeteer: {
@@ -59,49 +61,48 @@ const client = new Client({
     }
 });
 
-// Eventos do Cliente
 client.on('qr', async (qr) => {
     try {
         qrCodeData = await QRCode.toDataURL(qr);
         whatsappStatus = 'qr_ready';
-    } catch (err) { console.error(err); }
+    } catch (err) {
+        console.error('[WhatsApp] Erro ao gerar imagem QR', err);
+    }
 });
 
 client.on('ready', () => {
-    console.log('[WhatsApp] Conectado!');
+    console.log('[WhatsApp] Conectado com Sucesso!');
     whatsappStatus = 'connected';
     qrCodeData = null;
 });
 
-client.on('disconnected', () => {
+client.on('disconnected', (reason) => {
+    console.log('[WhatsApp] Desconectado:', reason);
     whatsappStatus = 'disconnected';
+    qrCodeData = null;
     setTimeout(initializeWhatsApp, 5000);
 });
 
 // Lógica de Mensagem com IA
 client.on('message', async msg => {
-    if (!model) return; // IA não configurada
-    if (msg.fromMe) return; // Não responder a si mesmo
+    if (!model) return; 
+    if (msg.fromMe) return;
 
     const chat = await msg.getChat();
     
-    // Verifica se IA está ativa para este chat e globalmente
-    // (Você pode adicionar um toggle global também se quiser)
     if (disabledAI.has(chat.id._serialized)) {
-        console.log(`[AI] Ignorando chat ${chat.name} (IA desativada manualmente)`);
+        console.log(`[AI] Ignorando chat ${chat.name} (IA desativada)`);
         return;
     }
 
-    // Delay natural para parecer humano
-    await new Promise(r => setTimeout(r, 2000 + Math.random() * 3000));
+    // Delay natural
+    await new Promise(r => setTimeout(r, 3000 + Math.random() * 2000));
     await chat.sendStateTyping();
 
     try {
-        // Prompt simples - idealmente você carregaria o contexto da empresa aqui
-        // buscando no banco Python via API interna
         const prompt = `Você é um assistente comercial da CRM VIRGULA.
         O cliente disse: "${msg.body}".
-        Responda de forma curta, prestativa e profissional. Tente agendar uma reunião.`;
+        Responda de forma curta, prestativa e profissional.`;
 
         const result = await model.generateContent(prompt);
         const response = result.response.text();
@@ -114,9 +115,10 @@ client.on('message', async msg => {
 
 async function initializeWhatsApp() {
     try {
+        console.log('[WhatsApp] Inicializando cliente...');
         await client.initialize();
     } catch (e) {
-        console.error("[WhatsApp] Erro:", e.message);
+        console.error("[WhatsApp] Erro fatal ao iniciar:", e.message);
         setTimeout(initializeWhatsApp, 10000);
     }
 }
@@ -125,12 +127,11 @@ initializeWhatsApp();
 
 // --- Endpoints para a Interface de Chat ---
 
-// Listar conversas ativas
 app.get('/api/whatsapp/chats', async (req, res) => {
     if (whatsappStatus !== 'connected') return res.json([]);
     try {
         const chats = await client.getChats();
-        const formatted = chats.map(c => ({
+        const formatted = chats.slice(0, 50).map(c => ({
             id: c.id._serialized,
             name: c.name || c.id.user,
             unread: c.unreadCount,
@@ -142,7 +143,6 @@ app.get('/api/whatsapp/chats', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Pegar mensagens de um chat
 app.get('/api/whatsapp/messages/:chatId', async (req, res) => {
     try {
         const chat = await client.getChatById(req.params.chatId);
@@ -156,7 +156,6 @@ app.get('/api/whatsapp/messages/:chatId', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Enviar mensagem manual
 app.post('/api/whatsapp/send', async (req, res) => {
     try {
         const { chatId, message } = req.body;
@@ -165,7 +164,6 @@ app.post('/api/whatsapp/send', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Toggle IA para um chat
 app.post('/api/whatsapp/toggle-ai', (req, res) => {
     const { chatId, active } = req.body;
     if (active) {
@@ -187,7 +185,9 @@ const pythonProxy = createProxyMiddleware({
     ws: true, 
     logLevel: 'error', 
     onError: (err, req, res) => {
-        if (!res.headersSent) res.status(502).json({ error: 'Backend Python indisponível.' });
+        if (!res.headersSent) {
+            res.status(502).json({ error: 'Backend Python indisponível.' });
+        }
     }
 });
 
@@ -202,5 +202,5 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Node] Rodando na porta ${PORT}`);
+  console.log(`[Node] Servidor Principal rodando na porta ${PORT}`);
 });
